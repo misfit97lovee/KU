@@ -2,7 +2,21 @@
  * READING_AGENT_SPEC.md 기반 시스템 프롬프트 및 가드레일 정의
  */
 
-export function buildSystemPrompt(readingState, explanationLevel = null) {
+import type { ComprehensionCheck, Grade } from '../src/types/index.ts';
+
+interface ReadingPromptState {
+  student?: { grade?: Grade | null };
+  book?: { title?: string };
+  session?: {
+    difficultPoints?: string[];
+    understoodPoints?: string[];
+    comprehensionChecks?: ComprehensionCheck[];
+  };
+}
+
+type ExplanationLevel = string | null;
+
+export function buildSystemPrompt(readingState: ReadingPromptState, explanationLevel: ExplanationLevel = null): string {
   const grade = readingState?.student?.grade || '중2';
   const bookTitle = readingState?.book?.title || '미정';
   const difficultPoints = readingState?.session?.difficultPoints?.join(', ') || '없음';
@@ -106,7 +120,7 @@ ${levelInstruction}
 /**
  * 대화 내용 기반 '지금까지 읽은 내용 요약' 프롬프트 생성기
  */
-export function buildSummaryPrompt(readingState) {
+export function buildSummaryPrompt(readingState: ReadingPromptState): string {
   const grade = readingState?.student?.grade || '중2';
   const bookTitle = readingState?.book?.title || '책';
 
@@ -134,7 +148,7 @@ export function buildSummaryPrompt(readingState) {
 /**
  * 대화 내용 및 ReadingState 기반 '오늘의 독서노트' 프롬프트 생성기
  */
-export function buildReadingNotePrompt(readingState) {
+export function buildReadingNotePrompt(readingState: ReadingPromptState): string {
   const grade = readingState?.student?.grade || '중2';
   const bookTitle = readingState?.book?.title || '책';
   const difficultPoints = readingState?.session?.difficultPoints?.join(', ') || '없음';

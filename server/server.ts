@@ -1,8 +1,55 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { buildSystemPrompt, buildSummaryPrompt, buildReadingNotePrompt } from './prompts.js';
-import { createRecommendationService, createGeminiRecommendationClient, parseBookSearchXml } from './bookRecommendations.js';
+import { buildSystemPrompt, buildSummaryPrompt, buildReadingNotePrompt } from './prompts.ts';
+import { createRecommendationService, createGeminiRecommendationClient, parseBookSearchXml } from './bookRecommendations.ts';
+import type {
+  Book,
+  ComprehensionCheck,
+  GeminiResponse,
+  RecommendationInput,
+  TaoLog,
+  Yes24Response
+} from '../src/types/index.ts';
+
+interface CandidateSearchOptions {
+  kdc?: string;
+  pageSize?: number;
+  pageNo?: number;
+  keyword?: string;
+  startDt?: string;
+  endDt?: string;
+}
+
+interface GeminiTextPart { text: string }
+interface GeminiImagePart { inlineData: { mimeType: string; data: string } }
+type GeminiPart = GeminiTextPart | GeminiImagePart;
+interface GeminiContent { role: 'user' | 'model'; parts: GeminiPart[] }
+
+interface ClientMessage { role: string; content: string }
+interface ChatBody {
+  messages?: ClientMessage[];
+  readingState?: Parameters<typeof buildSystemPrompt>[0];
+  image?: { data: string; mimeType?: string } | null;
+  explanationLevel?: string | null;
+}
+
+interface SummaryBody {
+  messages?: ClientMessage[];
+  readingState?: Parameters<typeof buildSummaryPrompt>[0];
+}
+
+interface ParsedGeminiResponse {
+  message: string;
+  evidence: string[];
+  suggestedQuestions: string[];
+  summary: string | null;
+  comprehensionCheck: Omit<ComprehensionCheck, 'timestamp'> | null;
+  tao: Omit<TaoLog, 'id' | 'timestamp'>;
+}
+
+const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
+const queryString = (value: unknown, fallback = ''): string => typeof value === 'string' ? value : fallback;
 
 dotenv.config();
 
@@ -17,6 +64,9 @@ const apiKey = rawApiKey.trim();
 const DATA4LIBRARY_AUTH_KEY = process.env.DATA4LIBRARY_AUTH_KEY || '';
 const DATA4LIBRARY_LIB_CODE = process.env.DATA4LIBRARY_LIB_CODE || '';
 const DATA4LIBRARY_BASE_URL = process.env.DATA4LIBRARY_BASE_URL || 'https://data4library.kr/api';
+
+// YES24 API 설정
+const YES24_API_KEY = (process.env.YES24_API || '').trim();
 
 // 미들웨어 설정 (이미지 Base64 처리를 위해 20MB로 넉넉하게 설정)
 app.use(cors());
@@ -39,15 +89,15 @@ app.get('/api/health', (req, res) => {
 /**
  * data4library XML 파싱 헬퍼 함수 (외부 라이브러리 없이 안전한 정규식 추출)
  */
-function parseLibraryXml(xmlString) {
-  const docs = [];
+function parseLibraryXml(xmlString: string): Book[] {
+  const docs: Book[] = [];
   const docRegex = /<doc>([\s\S]*?)<\/doc>/g;
   let match;
 
   while ((match = docRegex.exec(xmlString)) !== null) {
-    const docXml = match[1];
+    const docXml = match[1] ?? '';
 
-    const getTagValue = (tagName) => {
+    const getTagValue = (tagName: string): string => {
       const regex = new RegExp(`<${tagName}>(?:<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>|([\\s\\S]*?))<\\/${tagName}>`, 'i');
       const tagMatch = docXml.match(regex);
       if (!tagMatch) return '';
@@ -69,19 +119,20 @@ function parseLibraryXml(xmlString) {
 }
 
 /**
- * data4library itemSrch API 호출 헬퍼
+ * data4library 도서 검색 API 호출 헬퍼 (키워드 검색 시 srchBooks, 기본 시 itemSrch)
  */
-async function fetchCandidateBooks({ kdc = '', pageSize = 30, pageNo = 1, keyword = '', startDt = '2023-01-01', endDt = '2024-12-31' } = {}) {
-  if (!DATA4LIBRARY_AUTH_KEY || !DATA4LIBRARY_LIB_CODE) {
-    throw new Error('DATA4LIBRARY_AUTH_KEY 또는 DATA4LIBRARY_LIB_CODE 환경변수가 설정되지 않았습니다.');
+async function fetchCandidateBooks({ kdc = '', pageSize = 30, pageNo = 1, keyword = '', startDt = '2023-01-01', endDt = '2024-12-31' }: CandidateSearchOptions = {}): Promise<Book[]> {
+  if (!DATA4LIBRARY_AUTH_KEY) {
+    throw new Error('DATA4LIBRARY_AUTH_KEY 환경변수가 설정되지 않았습니다.');
   }
 
-  let apiUrl = `${DATA4LIBRARY_BASE_URL}/itemSrch?authKey=${DATA4LIBRARY_AUTH_KEY}&libCode=${DATA4LIBRARY_LIB_CODE}&startDt=${startDt}&endDt=${endDt}&pageSize=${pageSize}&pageNo=${pageNo}`;
-  if (kdc) {
-    apiUrl += `&kdc=${encodeURIComponent(kdc)}`;
-  }
+  let apiUrl;
   if (keyword) {
-    apiUrl += `&keyword=${encodeURIComponent(keyword)}`;
+    apiUrl = `${DATA4LIBRARY_BASE_URL}/srchBooks?authKey=${DATA4LIBRARY_AUTH_KEY}&title=${encodeURIComponent(keyword)}&pageNo=${pageNo}&pageSize=${pageSize}`;
+    if (kdc) apiUrl += `&kdc=${encodeURIComponent(kdc)}`;
+  } else {
+    apiUrl = `${DATA4LIBRARY_BASE_URL}/itemSrch?authKey=${DATA4LIBRARY_AUTH_KEY}&libCode=${DATA4LIBRARY_LIB_CODE}&startDt=${startDt}&endDt=${endDt}&pageSize=${pageSize}&pageNo=${pageNo}`;
+    if (kdc) apiUrl += `&kdc=${encodeURIComponent(kdc)}`;
   }
 
   const response = await fetch(apiUrl, { signal: AbortSignal.timeout(20000) });
@@ -92,7 +143,50 @@ async function fetchCandidateBooks({ kdc = '', pageSize = 30, pageNo = 1, keywor
     throw new Error(`도서관 정보나루 API 오류: ${xmlText}`);
   }
 
-  return parseLibraryXml(xmlText);
+  return parseBookSearchXml(xmlText);
+}
+
+/**
+ * YES24 상품 검색 API 호출 헬퍼
+ */
+async function fetchYes24Books({ query, pageSize = 20 }: { query: string; pageSize?: number }): Promise<Book[]> {
+  if (!YES24_API_KEY || !query) return [];
+  try {
+    const url = new URL('https://apis.yes24.com/v1/goods/itemList');
+    url.searchParams.set('query', query);
+    url.searchParams.set('category', 'BOOK');
+    url.searchParams.set('sort', 'RELATION');
+    url.searchParams.set('page', '1');
+    url.searchParams.set('pageSize', String(pageSize));
+    url.searchParams.set('detail', 'Y');
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        'X-Api-Key': YES24_API_KEY,
+        'Accept': 'application/json'
+      },
+      signal: AbortSignal.timeout(10000)
+    });
+
+    if (!response.ok) return [];
+    const data = await response.json() as Yes24Response;
+    const items = data.data?.items || [];
+    return items.map(item => ({
+      title: item.title || '',
+      author: item.author || '',
+      publisher: item.publisher || '',
+      isbn13: item.isbn13 || '',
+      publicationYear: item.publishDate ? item.publishDate.slice(0, 4) : '',
+      cover: item.cover || '',
+      category: item.goodsSortNm || '',
+      description: item.contentDetail?.bookIntroduction || item.contentDetail?.bookSummary || '',
+      sourceType: 'yes24',
+      sourceUrl: item.link || ''
+    }));
+  } catch (err: unknown) {
+    console.warn('[YES24 Search Error]', errorMessage(err));
+    return [];
+  }
 }
 
 /**
@@ -107,14 +201,12 @@ app.get('/api/library/items', async (req, res) => {
       });
     }
 
-    const {
-      startDt = '2023-01-01',
-      endDt = '2024-12-31',
-      pageSize = 30,
-      pageNo = 1,
-      keyword = '',
-      kdc = ''
-    } = req.query;
+    const startDt = queryString(req.query.startDt, '2023-01-01');
+    const endDt = queryString(req.query.endDt, '2024-12-31');
+    const pageSize = queryString(req.query.pageSize, '30');
+    const pageNo = queryString(req.query.pageNo, '1');
+    const keyword = queryString(req.query.keyword);
+    const kdc = queryString(req.query.kdc);
 
     const books = await fetchCandidateBooks({
       kdc,
@@ -131,11 +223,11 @@ app.get('/api/library/items', async (req, res) => {
       kdc: kdc || '전체',
       books
     });
-  } catch (error) {
-    console.error('[API /api/library/items 에러]:', error.message);
+  } catch (error: unknown) {
+    console.error('[API /api/library/items 에러]:', errorMessage(error));
     return res.status(500).json({
       error: '도서관 소장도서 목록을 가져오는 중 오류가 발생했습니다.',
-      details: error.message
+      details: errorMessage(error)
     });
   }
 });
@@ -143,7 +235,7 @@ app.get('/api/library/items', async (req, res) => {
 /**
  * Gemini API 호출 헬퍼 (호환 모델 및 재시도 지원)
  */
-async function callGemini(contents, systemInstruction, preferredModel = 'gemini-flash-latest') {
+async function callGemini(contents: GeminiContent[], systemInstruction: string, preferredModel = 'gemini-flash-latest'): Promise<{ text: string; modelUsed: string }> {
   if (!apiKey) {
     throw new Error('Gemini API 키가 서버 .env에 설정되어 있지 않습니다.');
   }
@@ -159,7 +251,7 @@ async function callGemini(contents, systemInstruction, preferredModel = 'gemini-
   ];
   const modelsToTry = [...new Set(candidateModels)];
 
-  let lastError = null;
+  let lastError: Error | null = null;
 
   for (const model of modelsToTry) {
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -182,7 +274,7 @@ async function callGemini(contents, systemInstruction, preferredModel = 'gemini-
           body: JSON.stringify(payload)
         });
 
-        const data = await response.json();
+        const data = await response.json() as GeminiResponse;
 
         if (!response.ok) {
           const errMsg = data.error?.message || response.statusText || 'API 오류';
@@ -210,12 +302,13 @@ async function callGemini(contents, systemInstruction, preferredModel = 'gemini-
         }
 
         return { text, modelUsed: model };
-      } catch (err) {
-        lastError = err;
-        if (err.message && (err.message.includes('no longer available') || err.message.includes('high demand'))) {
+      } catch (err: unknown) {
+        const caught = err instanceof Error ? err : new Error(String(err));
+        lastError = caught;
+        if (caught.message && (caught.message.includes('no longer available') || caught.message.includes('high demand'))) {
           break;
         }
-        throw err;
+        throw caught;
       }
     }
   }
@@ -226,7 +319,7 @@ async function callGemini(contents, systemInstruction, preferredModel = 'gemini-
 /**
  * 응답 텍스트에서 JSON 및 TAO 구조 파싱
  */
-function parseGeminiResponse(rawText) {
+function parseGeminiResponse(rawText: string): ParsedGeminiResponse {
   let cleaned = rawText.trim();
   if (cleaned.startsWith('```json')) {
     cleaned = cleaned.slice(7);
@@ -240,47 +333,55 @@ function parseGeminiResponse(rawText) {
 
   let message = rawText;
   let summary = null;
-  let comprehensionCheck = null;
+  let comprehensionCheck: Omit<ComprehensionCheck, 'timestamp'> | null = null;
   let tao = {
     thoughtSummary: '사용자의 입력을 분석하여 질문 의도를 파악함.',
     action: 'askUser',
     observation: '사용자에게 응답 메시지를 전송함.'
   };
 
-  let evidence = [];
-  let suggestedQuestions = [];
+  let evidence: string[] = [];
+  let suggestedQuestions: string[] = [];
 
   try {
-    const parsed = JSON.parse(cleaned);
+    const parsed = JSON.parse(cleaned) as {
+      message?: string;
+      summary?: string;
+      evidence?: unknown[];
+      suggestedQuestions?: unknown[];
+      comprehensionCheck?: { topic?: string; result?: string; difficultPart?: string | null };
+      tao?: Partial<Omit<TaoLog, 'id' | 'timestamp'>>;
+    };
     if (parsed && typeof parsed === 'object') {
       message = parsed.message || parsed.summary || rawText;
       summary = parsed.summary || null;
       if (Array.isArray(parsed.evidence)) {
         evidence = parsed.evidence
-          .map(e => typeof e === 'string' ? e.trim() : '')
-          .filter(e => e.length > 0);
+          .map((e: unknown) => typeof e === 'string' ? e.trim() : '')
+          .filter((e: string) => e.length > 0);
       }
       if (Array.isArray(parsed.suggestedQuestions)) {
         suggestedQuestions = parsed.suggestedQuestions
-          .map(q => typeof q === 'string' ? q.trim() : '')
-          .filter(q => q.length > 0)
+          .map((q: unknown) => typeof q === 'string' ? q.trim() : '')
+          .filter((q: string) => q.length > 0)
           .slice(0, 3);
       }
       if (parsed.comprehensionCheck) {
-        comprehensionCheck = {
-          topic: parsed.comprehensionCheck.topic || '핵심 내용',
-          result: parsed.comprehensionCheck.result || null,
-          difficultPart: parsed.comprehensionCheck.difficultPart || null
-        };
-        if (!comprehensionCheck.result) {
+        let checkResult = parsed.comprehensionCheck.result || '';
+        if (!checkResult) {
           if (message.includes('✅') || message.includes('잘 이해')) {
-            comprehensionCheck.result = '✅ 잘 이해했어요';
+            checkResult = '✅ 잘 이해했어요';
           } else if (message.includes('🟡') || message.includes('거의 이해')) {
-            comprehensionCheck.result = '🟡 거의 이해했어요';
+            checkResult = '🟡 거의 이해했어요';
           } else {
-            comprehensionCheck.result = '🔄 조금 더 살펴볼까요?';
+            checkResult = '🔄 조금 더 살펴볼까요?';
           }
         }
+        comprehensionCheck = {
+          topic: parsed.comprehensionCheck.topic || '핵심 내용',
+          result: checkResult,
+          difficultPart: parsed.comprehensionCheck.difficultPart || null
+        };
       }
       if (parsed.tao) {
         tao = {
@@ -321,7 +422,7 @@ function parseGeminiResponse(rawText) {
  */
 app.post('/api/chat', async (req, res) => {
   try {
-    const { messages = [], readingState = {}, image = null, explanationLevel = null } = req.body;
+    const { messages = [], readingState = {}, image = null, explanationLevel = null } = req.body as ChatBody;
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: '대화 메시지(messages) 목록이 필요합니다.' });
@@ -330,8 +431,8 @@ app.post('/api/chat', async (req, res) => {
     const systemPrompt = buildSystemPrompt(readingState, explanationLevel);
 
     // Gemini API 포맷으로 메시지 변환 (role: user / model)
-    const contents = messages.map((msg, idx) => {
-      const parts = [];
+    const contents: GeminiContent[] = messages.map((msg, idx) => {
+      const parts: GeminiPart[] = [];
 
       // 마지막 사용자 메시지에 이미지가 첨부된 경우 멀티모달 파트 주입
       if (idx === messages.length - 1 && image && image.data) {
@@ -352,7 +453,7 @@ app.post('/api/chat', async (req, res) => {
     });
 
     // Gemini API는 마지막 턴이 model이면 에러가 발생하므로 마지막이 model인 경우 적절한 user 턴 추가
-    if (contents.length > 0 && contents[contents.length - 1].role === 'model') {
+    if (contents.length > 0 && contents.at(-1)?.role === 'model') {
       let promptText = '방금 설명한 내용을 더 쉽게 설명해줘.';
       if (explanationLevel === 'quiz_request') {
         promptText = '방금 설명한 내용을 바탕으로 내가 잘 이해했는지 확인할 수 있는 질문이나 퀴즈를 하나 내줘.';
@@ -389,11 +490,11 @@ app.post('/api/chat', async (req, res) => {
       modelUsed,
       statePatch: {}
     });
-  } catch (error) {
-    console.error('[API /api/chat 에러]:', error.message);
+  } catch (error: unknown) {
+    console.error('[API /api/chat 에러]:', errorMessage(error));
     return res.status(500).json({
       error: 'AI 응답을 생성하는 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.',
-      details: error.message
+      details: errorMessage(error)
     });
   }
 });
@@ -404,7 +505,7 @@ app.post('/api/chat', async (req, res) => {
  */
 app.post('/api/summary', async (req, res) => {
   try {
-    const { messages = [], readingState = {} } = req.body;
+    const { messages = [], readingState = {} } = req.body as SummaryBody;
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: '요약할 대화 기록이 없습니다.' });
@@ -412,7 +513,7 @@ app.post('/api/summary', async (req, res) => {
 
     const summaryPrompt = buildSummaryPrompt(readingState);
 
-    const contents = messages.map(msg => ({
+    const contents: GeminiContent[] = messages.map(msg => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: msg.content }]
     }));
@@ -437,11 +538,11 @@ app.post('/api/summary', async (req, res) => {
       },
       modelUsed
     });
-  } catch (error) {
-    console.error('[API /api/summary 에러]:', error.message);
+  } catch (error: unknown) {
+    console.error('[API /api/summary 에러]:', errorMessage(error));
     return res.status(500).json({
       error: '독서 요약을 생성하는 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.',
-      details: error.message
+      details: errorMessage(error)
     });
   }
 });
@@ -452,7 +553,7 @@ app.post('/api/summary', async (req, res) => {
  */
 app.post('/api/reading-note', async (req, res) => {
   try {
-    const { messages = [], readingState = {} } = req.body;
+    const { messages = [], readingState = {} } = req.body as SummaryBody;
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: '독서노트를 작성할 대화 기록이 없습니다.' });
@@ -460,7 +561,7 @@ app.post('/api/reading-note', async (req, res) => {
 
     const notePrompt = buildReadingNotePrompt(readingState);
 
-    const contents = messages.map(msg => ({
+    const contents: GeminiContent[] = messages.map(msg => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: msg.content }]
     }));
@@ -485,7 +586,7 @@ app.post('/api/reading-note', async (req, res) => {
       if (cleaned.startsWith('```json')) cleaned = cleaned.slice(7);
       else if (cleaned.startsWith('```')) cleaned = cleaned.slice(3);
       if (cleaned.endsWith('```')) cleaned = cleaned.slice(0, -3);
-      const json = JSON.parse(cleaned.trim());
+      const json = JSON.parse(cleaned.trim()) as { readingNote?: string; tao?: Omit<TaoLog, 'id' | 'timestamp'> };
       if (json.readingNote) {
         readingNote = json.readingNote;
       }
@@ -503,17 +604,17 @@ app.post('/api/reading-note', async (req, res) => {
       tao,
       modelUsed
     });
-  } catch (error) {
-    console.error('[API /api/reading-note 에러]:', error.message);
+  } catch (error: unknown) {
+    console.error('[API /api/reading-note 에러]:', errorMessage(error));
     return res.status(500).json({
       error: '독서노트를 생성하는 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.',
-      details: error.message
+      details: errorMessage(error)
     });
   }
 });
 
 // Separate recommendation gateway keeps reading/photo/summary model behavior unchanged.
-const recommendationEvent = event => console.log('[Book recommendation]', JSON.stringify(event));
+const recommendationEvent = (event: Record<string, unknown>): void => console.log('[Book recommendation]', JSON.stringify(event));
 const recommendBooks = createRecommendationService({
   generate: createGeminiRecommendationClient({
     apiKey,
@@ -522,11 +623,13 @@ const recommendBooks = createRecommendationService({
     onEvent: recommendationEvent
   }),
   fetchCandidates: fetchCandidateBooks,
-  searchTitle: async title => {
+  fetchYes24: fetchYes24Books,
+  enableGoogleGrounding: process.env.ENABLE_GOOGLE_GROUNDING === 'true',
+  searchTitle: async (title: string): Promise<Book[]> => {
     if (!DATA4LIBRARY_AUTH_KEY) throw new Error('Library search is not configured');
     // srchBooks is the actual title/keyword search API; itemSrch is a holdings list.
     const url = new URL(`${DATA4LIBRARY_BASE_URL}/srchBooks`);
-    url.search = new URLSearchParams({ authKey: DATA4LIBRARY_AUTH_KEY, title, pageNo: '1', pageSize: '30' });
+    url.search = new URLSearchParams({ authKey: DATA4LIBRARY_AUTH_KEY, title, pageNo: '1', pageSize: '30' }).toString();
     const response = await fetch(url, { signal: AbortSignal.timeout(20000) });
     if (!response.ok) throw new Error(`Library title search HTTP ${response.status}`);
     const xml = await response.text();
@@ -537,7 +640,7 @@ const recommendBooks = createRecommendationService({
 });
 
 app.post('/api/recommend-books', async (req, res) => {
-  const { userMessage, userGrade, userInterests, chatHistory } = req.body;
+  const { userMessage, userGrade, userInterests, chatHistory, recommendedBooks } = req.body as Partial<RecommendationInput>;
   if (typeof userMessage !== 'string' || !userMessage.trim()) {
     return res.status(400).json({ error: '사용자 메시지가 필요합니다.' });
   }
@@ -545,7 +648,8 @@ app.post('/api/recommend-books', async (req, res) => {
     userMessage: userMessage.trim(),
     userGrade: typeof userGrade === 'string' ? userGrade : '중1',
     userInterests: Array.isArray(userInterests) ? userInterests : [],
-    chatHistory: Array.isArray(chatHistory) ? chatHistory : []
+    chatHistory: Array.isArray(chatHistory) ? chatHistory : [],
+    recommendedBooks: Array.isArray(recommendedBooks) ? recommendedBooks : []
   });
   console.log('[Book recommendation result]', JSON.stringify({
     count: result.books.length, sourceTypes: result.books.map(b => b.sourceType), search: result.search

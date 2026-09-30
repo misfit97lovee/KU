@@ -1,9 +1,10 @@
-import { stateManager } from './state.js';
-import { renderHeader } from './components/Header.js';
-import { renderOnboardingModal } from './components/OnboardingModal.js';
-import { renderBookInputPanel } from './components/BookInputPanel.js';
-import { renderChatPanel } from './components/ChatPanel.js';
-import { renderReadingRecordPanel } from './components/ReadingRecordPanel.js';
+import { stateManager } from './state.ts';
+import { renderHeader } from './components/Header.ts';
+import { renderOnboardingModal } from './components/OnboardingModal.ts';
+import { renderBookInputPanel } from './components/BookInputPanel.ts';
+import { renderChatPanel } from './components/ChatPanel.ts';
+import { renderReadingRecordPanel } from './components/ReadingRecordPanel.ts';
+import type { Grade, MessageImage, ReadingApiResponse } from './types/index.ts';
 
 let isLoading = false;
 let isSummaryLoading = false;
@@ -11,17 +12,17 @@ let isReadingNoteLoading = false;
 let isModalOpen = false;
 
 // DOM 엘리먼트 캐시
-const headerEl = document.getElementById('header-container');
-const panelBookEl = document.getElementById('panel-book');
-const panelChatEl = document.getElementById('panel-chat');
-const panelRecordEl = document.getElementById('panel-record');
-const modalContainerEl = document.getElementById('onboarding-modal-container');
+const headerEl = document.getElementById('header-container')!;
+const panelBookEl = document.getElementById('panel-book')!;
+const panelChatEl = document.getElementById('panel-chat')!;
+const panelRecordEl = document.getElementById('panel-record')!;
+const modalContainerEl = document.getElementById('onboarding-modal-container')!;
 const alertBannerEl = document.getElementById('alert-banner');
 
 /**
  * 에러 배너 표시 헬퍼
  */
-function showAlert(message) {
+function showAlert(message: string): void {
   if (!alertBannerEl) return;
   alertBannerEl.innerHTML = `
     <span>${message}</span>
@@ -40,18 +41,23 @@ function showAlert(message) {
 /**
  * 전체 화면 리렌더링
  */
-function renderApp() {
+function renderApp(): void {
   const state = stateManager.getState();
 
   // 1. 헤더 렌더링
   renderHeader(headerEl, state, {
+    isBusy: isLoading || isSummaryLoading || isReadingNoteLoading,
     onOpenGradeModal: () => {
       isModalOpen = true;
       renderApp();
     },
     onResetSession: () => {
-      stateManager.resetSession();
-      renderApp();
+      try {
+        stateManager.resetSession();
+        renderApp();
+      } catch {
+        showAlert('저장 공간이 부족하거나 저장기록에 접근할 수 없어 새 세션을 시작하지 않았어요. 현재 대화는 그대로 유지됩니다.');
+      }
     },
     onTitleChange: (title) => {
       stateManager.setBookTitle(title);
@@ -131,7 +137,7 @@ function renderApp() {
 /**
  * 일반 텍스트 메시지 전송
  */
-async function handleSendMessage(content) {
+async function handleSendMessage(content: string): Promise<void> {
   if (isLoading) return;
 
   stateManager.addMessage('user', content);
@@ -157,7 +163,7 @@ async function handleSendMessage(content) {
       })
     });
 
-    const data = await response.json();
+    const data = await response.json() as ReadingApiResponse;
 
     if (!response.ok) {
       throw new Error(data.details || data.error || '답변 요청에 실패했습니다.');
@@ -216,7 +222,7 @@ async function handleSendMessage(content) {
 /**
  * 책 사진과 함께 메시지 전송 (멀티모달)
  */
-async function handleSendImageMessage({ text, image }) {
+async function handleSendImageMessage({ text, image }: { text: string; image: MessageImage }): Promise<void> {
   if (isLoading) return;
 
   // 유저 메시지에 이미지 메타데이터 첨부하여 저장
@@ -243,7 +249,7 @@ async function handleSendImageMessage({ text, image }) {
       })
     });
 
-    const data = await response.json();
+    const data = await response.json() as ReadingApiResponse;
 
     if (!response.ok) {
       throw new Error(data.details || data.error || '사진 분석 요청에 실패했습니다.');
@@ -283,7 +289,7 @@ async function handleSendImageMessage({ text, image }) {
 /**
  * 설명 난이도 재조정 ([더 간단히] / [조금 더 자세히])
  */
-async function handleExplainLevel(level) {
+async function handleExplainLevel(level: string): Promise<void> {
   if (isLoading) return;
 
   const promptText = level === 'simple'
@@ -313,7 +319,7 @@ async function handleExplainLevel(level) {
       })
     });
 
-    const data = await response.json();
+    const data = await response.json() as ReadingApiResponse;
 
     if (!response.ok) {
       throw new Error(data.details || data.error || '설명 변경 요청에 실패했습니다.');
@@ -336,7 +342,7 @@ async function handleExplainLevel(level) {
     }
   } catch (err) {
     console.error('설명 난이도 요청 에러:', err);
-    showAlert(`설명 변환 실패: ${err.message}`);
+    showAlert(`설명 변환 실패: ${errorMessage(err)}`);
   } finally {
     isLoading = false;
     renderApp();
@@ -346,7 +352,7 @@ async function handleExplainLevel(level) {
 /**
  * 이해했는지 확인 질문 요청
  */
-async function handleCheckUnderstanding() {
+async function handleCheckUnderstanding(): Promise<void> {
   if (isLoading) return;
 
   const promptText = '방금 설명해 준 내용을 내가 잘 이해했는지 확인해 볼 수 있게 짧은 질문 하나만 내줘.';
@@ -376,7 +382,7 @@ async function handleCheckUnderstanding() {
       })
     });
 
-    const data = await response.json();
+    const data = await response.json() as ReadingApiResponse;
 
     if (!response.ok) {
       throw new Error(data.details || data.error || '이해 확인 질문 요청에 실패했습니다.');
@@ -407,7 +413,7 @@ async function handleCheckUnderstanding() {
 /**
  * 지금까지 읽은 내용 요약 생성
  */
-async function handleGenerateSummary() {
+async function handleGenerateSummary(): Promise<void> {
   if (isSummaryLoading) return;
 
   const state = stateManager.getState();
@@ -432,7 +438,7 @@ async function handleGenerateSummary() {
       })
     });
 
-    const data = await response.json();
+    const data = await response.json() as ReadingApiResponse;
 
     if (!response.ok) {
       throw new Error(data.details || data.error || '요약 생성 요청에 실패했습니다.');
@@ -456,7 +462,7 @@ async function handleGenerateSummary() {
 /**
  * 대화 내용 및 ReadingState 기반 오늘의 독서노트 생성
  */
-async function handleGenerateReadingNote() {
+async function handleGenerateReadingNote(): Promise<void> {
   if (isReadingNoteLoading) return;
 
   const state = stateManager.getState();
@@ -486,7 +492,7 @@ async function handleGenerateReadingNote() {
       })
     });
 
-    const data = await response.json();
+    const data = await response.json() as ReadingApiResponse;
 
     if (!response.ok) {
       throw new Error(data.details || data.error || '독서노트 생성 요청에 실패했습니다.');
@@ -500,7 +506,7 @@ async function handleGenerateReadingNote() {
     }
   } catch (err) {
     console.error('독서노트 생성 에러:', err);
-    showAlert(`독서노트 생성 중 오류: ${err.message}`);
+    showAlert(`독서노트 생성 중 오류: ${errorMessage(err)}`);
   } finally {
     isReadingNoteLoading = false;
     renderApp();
@@ -510,7 +516,7 @@ async function handleGenerateReadingNote() {
 /**
  * 모바일 탭 전환
  */
-function switchMobileTab(targetId) {
+function switchMobileTab(targetId: string | null): void {
   const tabs = document.querySelectorAll('.mobile-tab-btn');
   const panels = document.querySelectorAll('.panel-section');
 
@@ -531,7 +537,7 @@ function switchMobileTab(targetId) {
   });
 }
 
-function initMobileNav() {
+function initMobileNav(): void {
   const nav = document.getElementById('mobile-nav');
   if (!nav) return;
   nav.querySelectorAll('.mobile-tab-btn').forEach(btn => {
@@ -558,3 +564,7 @@ window.addEventListener('DOMContentLoaded', () => {
 stateManager.subscribe(() => {
   renderApp();
 });
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

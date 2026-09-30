@@ -22,3 +22,24 @@ GEMINI_API=your_gemini_api_key_here
 # 개발 서버 실행
 npm run dev
 ```
+
+## 페이지온 저장기록
+- 두 화면의 **새 세션**은 현재 기록을 먼저 저장기록에 보관한 후 시작합니다.
+- 읽기 도우미의 대화·사진·근거·요약·독서노트·이해도 상태를 함께 보관합니다. 책 추천 대화와 추천 도서도 보관합니다.
+- 공통 헤더의 **저장기록**에서 지난 세션을 읽을 수 있습니다. 보관함을 열어도 현재 세션은 바뀌지 않습니다.
+- 기록은 이 브라우저의 localStorage에 저장됩니다. 저장 공간 부족이나 저장 오류가 나면 현재 세션을 초기화하지 않습니다.
+
+## 책 추천 검증
+- 요청을 구조화한 뒤 도서관정보나루 후보의 주제·난이도 적합성을 검증합니다. 75점 이상만 최대 3권 표시하며 빈자리를 임의로 채우지 않습니다.
+- 특정 제목은 `srchBooks` 제목 검색을 우선합니다. 적합 후보가 없으면 Gemini의 `google_search` grounding을 사용합니다.
+- 검색 실행 기록, 출처에 연결된 제목·저자, 소개 근거가 확인되지 않은 웹 도서는 반환하지 않습니다. 추가 서지는 근거가 있을 때만 사용합니다.
+- `GEMINI_SEARCH_MODEL`로 검색 모델을 별도 지정할 수 있습니다. 검색 쿼터/네트워크 오류 시 내장 책 목록으로 대체하지 않습니다.
+- [Google Search grounding 공식 문서](https://ai.google.dev/gemini-api/docs/generate-content/google-search), [도서관정보나루 API 안내](https://data4library.kr/apiUtilization)
+
+```bash
+npm test
+# 별도 서버를 띄운 뒤 실제 네트워크/API 테스트 (API 사용량 발생)
+SERVER_PORT=3012 npm run server
+node tests/recommendations.live.js
+npm run build
+```

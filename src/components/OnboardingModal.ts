@@ -1,4 +1,12 @@
-export function renderOnboardingModal(container, { currentGrade, onSelectGrade, onClose }) {
+import type { Grade } from '../types/index.ts';
+
+interface OnboardingModalOptions {
+  currentGrade: Grade | null;
+  onSelectGrade: (grade: Grade) => void;
+  onClose: () => void;
+}
+
+export function renderOnboardingModal(container: HTMLElement, { currentGrade, onSelectGrade, onClose }: OnboardingModalOptions): void {
   const grades = [
     { value: '중1', title: '중학교 1학년', desc: '기초 어휘와 흥미 중심의 쉬운 대화' },
     { value: '중2', title: '중학교 2학년', desc: '문맥과 인물 심리를 탐색하는 대화' },
@@ -32,10 +40,10 @@ export function renderOnboardingModal(container, { currentGrade, onSelectGrade, 
   `;
 
   // 카드 클릭 이벤트
-  container.querySelectorAll('.grade-card-btn').forEach(btn => {
+  container.querySelectorAll<HTMLButtonElement>('.grade-card-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const grade = btn.getAttribute('data-grade');
-      onSelectGrade(grade);
+      if (grade) onSelectGrade(grade);
     });
   });
 
@@ -45,7 +53,7 @@ export function renderOnboardingModal(container, { currentGrade, onSelectGrade, 
   }
 
   // 바깥 클릭 시 닫기 (이미 학년이 있는 경우만)
-  const backdrop = container.querySelector('#modal-backdrop');
+  const backdrop = container.querySelector<HTMLElement>('#modal-backdrop')!;
   backdrop.addEventListener('click', (e) => {
     if (e.target === backdrop && currentGrade) {
       onClose();

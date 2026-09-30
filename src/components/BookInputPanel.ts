@@ -1,7 +1,14 @@
-export function renderBookInputPanel(container, { onSendToChat, onSendImage }) {
-  let activeTab = 'image'; // 우선순위 1이므로 기본 탭을 '책 사진 올리기'로 설정
-  let selectedFile = null;
-  let previewUrl = null;
+import type { MessageImage } from '../types/index.ts';
+
+interface BookInputOptions {
+  onSendToChat: (text: string) => void;
+  onSendImage: (payload: { text: string; image: MessageImage; previewUrl: string | null }) => void;
+}
+
+export function renderBookInputPanel(container: HTMLElement, { onSendToChat, onSendImage }: BookInputOptions): void {
+  let activeTab: 'image' | 'direct' = 'image'; // 우선순위 1이므로 기본 탭을 '책 사진 올리기'로 설정
+  let selectedFile: File | null = null;
+  let previewUrl: string | null = null;
 
   function update() {
     container.innerHTML = `
@@ -29,7 +36,7 @@ export function renderBookInputPanel(container, { onSendToChat, onSendImage }) {
     // 탭 전환 이벤트
     container.querySelectorAll('.book-tab-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        activeTab = btn.getAttribute('data-tab');
+        activeTab = btn.getAttribute('data-tab') === 'direct' ? 'direct' : 'image';
         update();
       });
     });
@@ -38,7 +45,7 @@ export function renderBookInputPanel(container, { onSendToChat, onSendImage }) {
     const submitTextBtn = container.querySelector('#btn-submit-book-text');
     if (submitTextBtn) {
       submitTextBtn.addEventListener('click', () => {
-        const textarea = container.querySelector('#book-text-input');
+        const textarea = container.querySelector<HTMLTextAreaElement>('#book-text-input')!;
         const text = textarea.value.trim();
         if (!text) {
           alert('책 내용을 입력해 주세요.');
@@ -50,14 +57,14 @@ export function renderBookInputPanel(container, { onSendToChat, onSendImage }) {
     }
 
     // 파일 업로드 이벤트 바인딩
-    const fileInput = container.querySelector('#book-photo-input');
-    const dropZone = container.querySelector('#photo-dropzone');
+    const fileInput = container.querySelector<HTMLInputElement>('#book-photo-input');
+    const dropZone = container.querySelector<HTMLElement>('#photo-dropzone');
     const removeBtn = container.querySelector('#btn-remove-photo');
     const submitImageBtn = container.querySelector('#btn-submit-book-photo');
 
     if (fileInput) {
       fileInput.addEventListener('change', (e) => {
-        const file = e.target.files?.[0];
+        const file = (e.target as HTMLInputElement).files?.[0];
         handleFileSelect(file);
       });
     }
@@ -81,7 +88,7 @@ export function renderBookInputPanel(container, { onSendToChat, onSendImage }) {
         e.preventDefault();
         dropZone.style.borderColor = 'var(--border-color)';
         dropZone.style.background = 'var(--bg-subtle)';
-        const file = e.dataTransfer.files?.[0];
+        const file = (e as DragEvent).dataTransfer?.files?.[0];
         handleFileSelect(file);
       });
 
@@ -106,12 +113,13 @@ export function renderBookInputPanel(container, { onSendToChat, onSendImage }) {
           alert('먼저 책 사진을 업로드해 주세요.');
           return;
         }
-        const commentInput = container.querySelector('#photo-comment-input');
+        const file = selectedFile;
+        const commentInput = container.querySelector<HTMLInputElement>('#photo-comment-input');
         const comment = commentInput?.value.trim() || '책 페이지 사진을 찍었어. 이해하기 어려운 부분이 있어.';
 
         // Base64 변환
-        const base64Data = await fileToBase64(selectedFile);
-        const mimeType = selectedFile.type || 'image/jpeg';
+        const base64Data = await fileToBase64(file);
+        const mimeType = file.type || 'image/jpeg';
 
         onSendImage({
           text: `[책 사진 업로드]\n${comment}`,
@@ -130,7 +138,7 @@ export function renderBookInputPanel(container, { onSendToChat, onSendImage }) {
     }
   }
 
-  function handleFileSelect(file) {
+  function handleFileSelect(file?: File): void {
     if (!file) return;
     const validTypes = ['image/jpeg', 'image/jpg', 'image/png'];
     if (!validTypes.includes(file.type)) {
@@ -150,7 +158,7 @@ export function renderBookInputPanel(container, { onSendToChat, onSendImage }) {
   update();
 }
 
-function renderImageTab(selectedFile, previewUrl) {
+function renderImageTab(selectedFile: File | null, previewUrl: string | null): string {
   return `
     <div style="display: flex; flex-direction: column; gap: 14px; flex: 1;">
       <input
@@ -174,7 +182,7 @@ function renderImageTab(selectedFile, previewUrl) {
           >✕</button>
         </div>
         <div style="font-size: 12px; color: var(--text-secondary);">
-          선택된 파일: ${selectedFile.name} (${Math.round(selectedFile.size / 1024)} KB)
+          선택된 파일: ${selectedFile?.name || ''} (${Math.round((selectedFile?.size || 0) / 1024)} KB)
         </div>
       ` : `
         <div
@@ -209,7 +217,7 @@ function renderImageTab(selectedFile, previewUrl) {
   `;
 }
 
-function renderTextTab(activeTab) {
+function renderTextTab(activeTab: 'image' | 'direct'): string {
   return `
     <textarea
       id="book-text-input"
@@ -223,14 +231,14 @@ function renderTextTab(activeTab) {
   `;
 }
 
-function fileToBase64(file) {
+function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
-      const result = reader.result;
+      const result = typeof reader.result === 'string' ? reader.result : '';
       // data:image/jpeg;base64,.... 에서 실제 base64 부분만 추출
       const base64 = result.split(',')[1];
-      resolve(base64);
+      resolve(base64 || '');
     };
     reader.onerror = reject;
     reader.readAsDataURL(file);

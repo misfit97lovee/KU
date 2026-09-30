@@ -1,16 +1,16 @@
 // Presentation only: escape HTML before applying a small, safe Markdown subset.
-export function formatText(value) {
+export function formatText(value: unknown): string {
   const escaped = String(value ?? '')
     .replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
-  const inline = (text) => text
+  const inline = (text: string): string => text
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/__(.+?)__/g, '<strong>$1</strong>')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*/g, '');
   let list = '';
-  const result = [];
+  const result: string[] = [];
   for (const line of escaped.split('\n')) {
     const item = line.match(/^\s*(?:[-*+]\s+|(\d+)[.)]\s+)(.*)$/);
     if (item) {
@@ -20,13 +20,13 @@ export function formatText(value) {
         list = kind;
         result.push(`<${list}>`);
       }
-      result.push(`<li>${inline(item[2])}</li>`);
+      result.push(`<li>${inline(item[2] || '')}</li>`);
       continue;
     }
     if (list) { result.push(`</${list}>`); list = ''; }
     if (!line.trim()) continue;
     const heading = line.match(/^\s*#{1,6}\s+(.+)$/);
-    result.push(heading ? `<h3>${inline(heading[1])}</h3>` : `<p>${inline(line)}</p>`);
+    result.push(heading ? `<h3>${inline(heading[1] || '')}</h3>` : `<p>${inline(line)}</p>`);
   }
   if (list) result.push(`</${list}>`);
   return result.join('');

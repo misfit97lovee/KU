@@ -1,11 +1,68 @@
-import { serviceHeader } from '../src/components/Header.js';
+import { serviceHeader, bindHistoryButton } from '../src/components/Header.ts';
+import { saveSessionSnapshot } from '../src/sessionHistory.ts';
+import type { BookSourceType, RecommendationClarification, RecommendationResponse } from '../src/types/index.ts';
+
+interface CuratorBook {
+  id?: string;
+  title: string;
+  author: string;
+  authors?: string;
+  publisher?: string | null;
+  callNo?: string;
+  targetGrade?: string;
+  category?: string | null;
+  classNm?: string;
+  keywords?: string[];
+  synopsis?: string | null;
+  description?: string | null;
+  coreConcepts?: string[];
+  questions?: string[];
+  reason?: string;
+  isbn13?: string | null;
+  cover?: string | null;
+  sourceUrl?: string | null;
+  sourceType?: BookSourceType;
+}
+interface CuratorChatMessage {
+  role: string;
+  content: string;
+  isClarification?: boolean;
+  originalRequest?: string;
+}
+interface CuratorDocument {
+  book: CuratorBook & { synopsis: string; coreConcepts: string[]; questions: string[]; callNo: string; targetGrade: string };
+  markdown: string;
+  createdAt: string;
+}
+interface CuratorState {
+  goal: string;
+  userGrade: string;
+  userInterests: string[];
+  recommendedBooks: CuratorBook[];
+  currentDocument: CuratorDocument | null;
+  chatHistory: CuratorChatMessage[];
+  turnCount: number;
+}
+interface TaoTurnData {
+  turn: number;
+  thought: string;
+  actionName: string;
+  actionParams: Record<string, unknown>;
+  observation: string;
+  isSafe: boolean;
+}
+type CuratorApiResponse = Omit<RecommendationResponse, 'books'> & { books: CuratorBook[] };
+type SafetyResult = { isSafe: true } | { isSafe: false; reason: string; type: string; fallbackMessage: string };
+interface ToolResult { status: string; message?: string; bookTitle?: string; documentCreated?: boolean; previewSnippet?: string; action?: string }
+
+const requiredElement = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
 
 /* -------------------------------------------------------------
    1. Application State (5-Element Architecture)
    - 보안 조치: 프론트엔드 API 키 완전 제거
    - 브라우저 -> Express 서버(/api/recommend-books) -> .env -> Gemini
    ------------------------------------------------------------- */
-const AgentState = {
+const AgentState: CuratorState = {
   goal: "중학생 관심사 탐색 및 도서 추천 · 독서 노트 완성",
   userGrade: "중학교 1학년",
   userInterests: [], // Set of strings
@@ -18,7 +75,7 @@ const AgentState = {
 /* -------------------------------------------------------------
    2. National Library Mock Database (중학생 맞춤형 도서 20+선)
    ------------------------------------------------------------- */
-const NationalLibraryDB = [
+const NationalLibraryDB: CuratorBook[] = [
   // 과학 / 우주 / 천문
   {
     id: "NLK-001",
@@ -293,7 +350,7 @@ const NationalLibraryDB = [
    ------------------------------------------------------------- */
 const AgentTools = {
   // 1. askUser Tool
-  askUser: function(params) {
+  askUser: function(params: { question: string; hint?: string }): ToolResult & { question: string; hint: string } {
     return {
       status: "SUCCESS",
       action: "askUser",
@@ -303,10 +360,10 @@ const AgentTools = {
   },
 
   // 3. makeStudyMarkdown Tool
-  makeStudyMarkdown: function(params) {
+  makeStudyMarkdown: function(params: { bookId?: string }): ToolResult {
     const selected = AgentState.recommendedBooks.find(b => b.id && b.id === params.bookId) || AgentState.recommendedBooks.at(-1);
     if (!selected) return { status: 'FAIL', message: '먼저 책을 선택해 주세요.' };
-    const book = { ...selected, synopsis: selected.description || selected.synopsis || '확인된 책 소개가 없습니다.',
+    const book: CuratorDocument['book'] = { ...selected, synopsis: selected.description || selected.synopsis || '확인된 책 소개가 없습니다.',
       coreConcepts: selected.coreConcepts || [], questions: selected.questions || [],
       callNo: selected.callNo || '확인되지 않음', targetGrade: selected.targetGrade || '확인되지 않음' };
 
@@ -369,7 +426,7 @@ ${book.questions.map((q, idx) => `### Q${idx + 1}. ${q}\n*(나의 생각)*: `).j
   },
 
   // 4. exportPDF Tool
-  exportPDF: function() {
+  exportPDF: function(): ToolResult {
     if (!AgentState.currentDocument) {
       return { status: "FAIL", message: "작성된 독서 노트가 없습니다." };
     }
@@ -395,7 +452,7 @@ const SafetyGuardrail = {
     "가드레일 해제", "dan 모드", "jailbreak"
   ],
 
-  check: function(input) {
+  check: function(input: string): SafetyResult {
     const lower = input.toLowerCase();
     
     for (const jb of this.jailbreakKeywords) {
@@ -433,7 +490,7 @@ const API_BASE_URL = window.location.origin.includes(':3002')
   ? '' 
   : (window.location.origin.includes(':5173') ? 'http://localhost:3002' : '');
 
-async function callRecommendBooksApi(userMessage) {
+async function callRecommendBooksApi(userMessage: string): Promise<CuratorApiResponse> {
   const url = `${API_BASE_URL}/api/recommend-books`;
 
   const payload = {
@@ -454,10 +511,26 @@ async function callRecommendBooksApi(userMessage) {
     throw new Error(`Server API HTTP Error: ${response.status}`);
   }
 
-  return await response.json();
+  return await response.json() as CuratorApiResponse;
 }
 
-async function runAgentTurn(userMessage) {
+let isRecommendationLoading = false;
+async function runAgentTurn(userMessage: string): Promise<void> {
+  if (isRecommendationLoading) return;
+  isRecommendationLoading = true;
+  const reset = document.querySelector<HTMLButtonElement>('[data-reset-recommendation]');
+  const send = document.getElementById('sendBtn') as HTMLButtonElement | null;
+  if (reset) reset.disabled = true;
+  if (send) send.disabled = true;
+  try { await processAgentTurn(userMessage); }
+  finally {
+    isRecommendationLoading = false;
+    if (reset) reset.disabled = false;
+    if (send) send.disabled = false;
+  }
+}
+
+async function processAgentTurn(userMessage: string): Promise<void> {
   AgentState.turnCount++;
   const currentTurn = AgentState.turnCount;
 
@@ -500,8 +573,17 @@ async function runAgentTurn(userMessage) {
   try {
     const result = await callRecommendBooksApi(userMessage);
     if (!result.success || !Array.isArray(result.books)) throw new Error('Invalid recommendation response');
-    const books = result.books.filter(book => ['library', 'web'].includes(book.sourceType));
-    const response = books.length ? result.response : '조건에 딱 맞는 책을 확인하지 못했어.\n관심 분야나 난이도를 조금 넓혀서 다시 찾아볼까?';
+    if (result.clarification?.question) {
+      const response = result.clarification.question;
+      AgentState.chatHistory.push({ role: 'librarian', content: response, isClarification: true, originalRequest: userMessage });
+      renderTaoTurn({ turn: currentTurn, thought: '추천 결과가 크게 달라지는 핵심 조건 확인',
+        actionName: 'askClarification', actionParams: { searchMode: result.request?.searchMode },
+        observation: '추가 질문 1개 표시', isSafe: true });
+      appendLibrarianMessage(response, null, false, null, result.clarification);
+      return;
+    }
+    const books = result.books.filter(book => book.sourceType && ['yes24', 'library', 'web'].includes(book.sourceType));
+    const response = books.length ? result.response : '조건에 딱 맞는 책을 찾지 못했어요.\n비슷한 분야까지 범위를 조금 넓혀볼까요?';
     for (const book of books) {
       if (!AgentState.recommendedBooks.some(existing =>
         (existing.isbn13 && book.isbn13 && existing.isbn13 === book.isbn13) ||
@@ -512,7 +594,9 @@ async function runAgentTurn(userMessage) {
     renderHud();
     AgentState.chatHistory.push({ role: 'librarian', content: response });
     renderTaoTurn({ turn: currentTurn, thought: '요청과 실제 검색 근거 확인',
-      actionName: result.search?.fallbackUsed ? 'searchWebBooks' : 'searchLibraryBooks',
+      actionName: books.some(book => book.sourceType === 'yes24')
+        ? 'searchYes24Books'
+        : (result.search?.fallbackUsed ? 'searchWebBooks' : 'searchLibraryBooks'),
       actionParams: { count: books.length }, observation: books.length ? '확인된 도서 표시' : '조건에 맞는 도서 미확인', isSafe: true });
     appendLibrarianMessage(response, books, false, result.searchSuggestionsHtml);
   } catch {
@@ -525,7 +609,7 @@ async function runAgentTurn(userMessage) {
 /* -------------------------------------------------------------
    6. UI Rendering & Interactions
    ------------------------------------------------------------- */
-function initApp() {
+function initApp(): void {
   try {
     const profile = JSON.parse(localStorage.getItem('reading-agent-profile') || '{}');
     if (profile.grade) {
@@ -534,14 +618,14 @@ function initApp() {
       else if (profile.grade === '중3') AgentState.userGrade = '중학교 3학년';
       else AgentState.userGrade = profile.grade;
 
-      const gradeSelect = document.getElementById('gradeSelect');
+      const gradeSelect = document.getElementById('gradeSelect') as HTMLSelectElement | null;
       if (gradeSelect) gradeSelect.value = AgentState.userGrade;
     }
   } catch (e) {
     console.warn('프로필 로드 실패:', e);
   }
 
-  document.getElementById('hudGrade').innerText = AgentState.userGrade;
+  requiredElement('hudGrade').innerText = AgentState.userGrade;
   
   const initialGreeting = `좋아하는 주제나 이야기 하나만 들려줘. 너에게 어울리는 책을 함께 찾아볼게.`;
   
@@ -557,7 +641,7 @@ function initApp() {
   });
 }
 
-function extractInterests(text) {
+function extractInterests(text: string): void {
   const keywordsPool = [
     "우주", "천문학", "블랙홀", "과학", "물리", "화학",
     "소설", "문학", "추리", "미스터리", "모험", "판타지",
@@ -574,22 +658,22 @@ function extractInterests(text) {
   renderHud();
 }
 
-function renderHud() {
-  document.getElementById('hudGrade').innerText = AgentState.userGrade;
+function renderHud(): void {
+  requiredElement('hudGrade').innerText = AgentState.userGrade;
 
-  const interestsContainer = document.getElementById('hudInterests');
+  const interestsContainer = requiredElement('hudInterests');
   if (AgentState.userInterests.length === 0) {
     interestsContainer.innerHTML = `<span style="color: var(--text-muted); font-size: 0.78rem;">대화를 통해 탐색 중...</span>`;
   } else {
     interestsContainer.innerHTML = AgentState.userInterests.map(tag => `<span class="tag-badge">#${tag}</span>`).join('');
   }
 
-  document.getElementById('hudBooksCount').innerHTML = `
+  requiredElement('hudBooksCount').innerHTML = `
     <span style="color: #fef08a; font-weight: bold;">${AgentState.recommendedBooks.length}권 추천됨</span>
   `;
 
-  const docStatus = document.getElementById('hudDocStatus');
-  const headerBtn = document.getElementById('headerNoteBtn');
+  const docStatus = requiredElement('hudDocStatus');
+  const headerBtn = requiredElement('headerNoteBtn');
   if (AgentState.currentDocument) {
     docStatus.innerHTML = `
       <span class="doc-preview-badge" onclick="openNoteModal()">
@@ -603,8 +687,8 @@ function renderHud() {
   }
 }
 
-function renderTaoTurn(data) {
-  const timeline = document.getElementById('taoTimeline');
+function renderTaoTurn(data: TaoTurnData): void {
+  const timeline = requiredElement('taoTimeline');
   const card = document.createElement('div');
   card.className = 'tao-turn-card';
 
@@ -649,7 +733,7 @@ function renderTaoTurn(data) {
   timeline.scrollTop = timeline.scrollHeight;
 }
 
-function formatChatText(text) {
+function formatChatText(text: string): string {
   if (!text) return "";
   let escaped = escapeHtml(text);
   escaped = escaped.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
@@ -659,8 +743,8 @@ function formatChatText(text) {
   return escaped;
 }
 
-function appendUserMessage(text) {
-  const container = document.getElementById('chatMessages');
+function appendUserMessage(text: string): void {
+  const container = requiredElement('chatMessages');
   const timeStr = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 
   const msgDiv = document.createElement('div');
@@ -675,12 +759,12 @@ function appendUserMessage(text) {
   container.scrollTop = container.scrollHeight;
 }
 
-function escapeJsString(str) {
+function escapeJsString(str: string): string {
   if (!str) return '';
   return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, ' ');
 }
 
-function readThisBook(title, author) {
+function readThisBook(title: string, author: string): void {
   const fullTitle = author && author !== '저자 미상' ? `${title} (${author})` : title;
 
   // 1. ReadingState 세션에 제목 저장 (로컬스토리지 영속화)
@@ -698,8 +782,8 @@ function readThisBook(title, author) {
   window.location.href = targetUrl;
 }
 
-function appendLibrarianMessage(text, books = null, showNotePrompt = false, searchSuggestionsHtml = null) {
-  const container = document.getElementById('chatMessages');
+function appendLibrarianMessage(text: string, books: CuratorBook[] | null = null, showNotePrompt = false, searchSuggestionsHtml: string | null = null, clarification: RecommendationClarification | null = null): void {
+  const container = requiredElement('chatMessages');
   const timeStr = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 
   const msgDiv = document.createElement('div');
@@ -738,7 +822,7 @@ function appendLibrarianMessage(text, books = null, showNotePrompt = false, sear
                 <div class="book-meta">
                   <span> ${escapeHtml(authorText)}</span>
                   ${publisherText ? `<span>${escapeHtml(publisherText)}</span>` : ''}
-                  ${book.sourceType === 'library' ? '<span class="book-source">도서관 소장 도서</span>' : book.sourceType === 'web' ? `<span class="book-source">웹에서 찾은 도서${sourceUrl ? ` · <a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">출처 확인</a>` : ''}</span>` : ''}
+                  ${book.sourceType === 'yes24' ? `<span class="book-source">YES24${sourceUrl ? ` · <a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">YES24에서 보기</a>` : ''}</span>` : book.sourceType === 'library' ? '<span class="book-source">도서관 소장 도서</span>' : book.sourceType === 'web' ? `<span class="book-source">웹에서 찾은 도서${sourceUrl ? ` · <a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">출처 확인</a>` : ''}</span>` : ''}
                 </div>
                 ${reasonText ? `
                   <div class="book-reason">
@@ -770,10 +854,18 @@ function appendLibrarianMessage(text, books = null, showNotePrompt = false, sear
     `;
   }
 
+  const clarificationHtml = clarification?.options?.length ? `
+    <div class="quick-chips-list" style="margin-top: 10px;">
+      ${clarification.options.map(option => `<button type="button" class="chip-btn clarification-option" data-clarification-answer="${escapeHtml(option)}">${escapeHtml(option)}</button>`).join('')}
+      <button type="button" class="chip-btn clarification-option" data-clarification-answer="바로 추천해줘">바로 추천</button>
+    </div>
+  ` : '';
+
   msgDiv.innerHTML = `
 
     <div style="display: flex; flex-direction: column; max-width: 100%;">
       <div class="msg-bubble">${formatChatText(text)}</div>
+      ${clarificationHtml}
       ${bookCardsHtml}
       ${noteQuickAction}
       <div class="msg-time">
@@ -792,16 +884,26 @@ function appendLibrarianMessage(text, books = null, showNotePrompt = false, sear
     msgDiv.appendChild(suggestions);
   }
   container.appendChild(msgDiv);
+  msgDiv.querySelectorAll('.clarification-option').forEach(button => {
+    button.addEventListener('click', () => {
+      const input = document.getElementById('chatInput') as HTMLTextAreaElement | null;
+      if (!input || isRecommendationLoading) return;
+      input.value = button.getAttribute('data-clarification-answer') || '';
+      handleSendMessage();
+    });
+  });
   container.scrollTop = container.scrollHeight;
 }
 
-function safeBookSourceUrl(value) {
+function safeBookSourceUrl(value?: string | null): string | null {
+  if (!value) return null;
   try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) ? url.href : null; }
   catch { return null; }
 }
 
-function handleSendMessage() {
-  const input = document.getElementById('chatInput');
+function handleSendMessage(): void {
+  if (isRecommendationLoading) return;
+  const input = document.getElementById('chatInput') as HTMLTextAreaElement;
   const text = input.value.trim();
   if (!text) return;
 
@@ -809,12 +911,10 @@ function handleSendMessage() {
   input.value = "";
   input.style.height = "auto";
 
-  setTimeout(() => {
-    runAgentTurn(text);
-  }, 400);
+  runAgentTurn(text);
 }
 
-function handleInputKeydown(e) {
+function handleInputKeydown(e: KeyboardEvent): void {
   if (e.isComposing) return;
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
@@ -822,12 +922,12 @@ function handleInputKeydown(e) {
   }
 }
 
-function sendQuickPrompt(promptText) {
-  document.getElementById('chatInput').value = promptText;
+function sendQuickPrompt(promptText: string): void {
+  (document.getElementById('chatInput') as HTMLTextAreaElement).value = promptText;
   handleSendMessage();
 }
 
-function requestNoteForBook(bookId) {
+function requestNoteForBook(bookId?: string): void {
   appendUserMessage(`이 책으로 독서 노트 작성해줘.`);
   setTimeout(() => {
     const toolRes = AgentTools.makeStudyMarkdown({ bookId: bookId });
@@ -850,7 +950,7 @@ function requestNoteForBook(bookId) {
   }, 400);
 }
 
-function handleGradeChange(newGrade) {
+function handleGradeChange(newGrade: string): void {
   AgentState.userGrade = newGrade;
   renderHud();
 
@@ -879,16 +979,16 @@ function handleGradeChange(newGrade) {
 /* -------------------------------------------------------------
    7. Note Modal & PDF Print Functions
    ------------------------------------------------------------- */
-function openNoteModal() {
+function openNoteModal(): void {
   if (!AgentState.currentDocument) {
     const book = AgentState.recommendedBooks.at(-1);
     if (!book) return;
     AgentTools.makeStudyMarkdown({ bookId: book.id });
   }
 
-  const doc = AgentState.currentDocument;
+  const doc = AgentState.currentDocument!;
   const b = doc.book;
-  const modalBody = document.getElementById('noteModalBody');
+  const modalBody = requiredElement('noteModalBody');
 
   modalBody.innerHTML = `
     <div class="note-sheet" id="printableNote">
@@ -950,25 +1050,25 @@ function openNoteModal() {
     </div>
   `;
 
-  document.getElementById('noteModal').classList.add('active');
+  requiredElement('noteModal').classList.add('active');
 }
 
-function closeNoteModal() {
-  document.getElementById('noteModal').classList.remove('active');
+function closeNoteModal(): void {
+  requiredElement('noteModal').classList.remove('active');
 }
 
-function printStudyNote() {
+function printStudyNote(): void {
   window.print();
 }
 
-function copyMarkdownContent() {
+function copyMarkdownContent(): void {
   if (!AgentState.currentDocument) return;
   navigator.clipboard.writeText(AgentState.currentDocument.markdown).then(() => {
     alert("독서 노트 마크다운이 클립보드에 복사되었습니다!");
   });
 }
 
-function downloadMarkdownFile() {
+function downloadMarkdownFile(): void {
   if (!AgentState.currentDocument) return;
   const blob = new Blob([AgentState.currentDocument.markdown], { type: 'text/markdown;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -984,35 +1084,41 @@ function downloadMarkdownFile() {
 /* -------------------------------------------------------------
    8. Settings Modal (API Key 입력 완전 제거 / 보안 강화)
    ------------------------------------------------------------- */
-function openSettingsModal() {
-  document.getElementById('settingsModal').classList.add('active');
+function openSettingsModal(): void {
+  requiredElement('settingsModal').classList.add('active');
 }
 
-function closeSettingsModal() {
-  document.getElementById('settingsModal').classList.remove('active');
+function closeSettingsModal(): void {
+  requiredElement('settingsModal').classList.remove('active');
 }
 
-function resetSession() {
-  if (confirm("대화 내용과 탐색된 독서 기록을 초기화하시겠습니까?")) {
+function resetSession(): void {
+  if (isRecommendationLoading) return;
+  if (confirm("현재 대화와 추천 도서를 저장기록에 보관하고 새 세션을 시작할까요?")) {
+    try { saveSessionSnapshot('recommendation', AgentState); }
+    catch { alert('기록을 저장하지 못해 새 세션을 시작하지 않았어요. 현재 대화는 그대로 유지됩니다.'); return; }
     AgentState.turnCount = 0;
     AgentState.userGrade = "중학교 1학년";
     AgentState.userInterests = [];
     AgentState.recommendedBooks = [];
     AgentState.currentDocument = null;
     AgentState.chatHistory = [];
-    const gradeSelect = document.getElementById('gradeSelect');
+    const gradeSelect = document.getElementById('gradeSelect') as HTMLSelectElement | null;
     if (gradeSelect) gradeSelect.value = "중학교 1학년";
-    document.getElementById('chatMessages').innerHTML = "";
-    document.getElementById('taoTimeline').innerHTML = "";
+    requiredElement('chatMessages').innerHTML = "";
+    requiredElement('taoTimeline').innerHTML = "";
+    const input = document.getElementById('chatInput') as HTMLTextAreaElement | null;
+    if (input) { input.value = ''; input.style.height = 'auto'; }
     initApp();
+    renderHud();
   }
 }
 
-function clearTaoFeed() {
-  document.getElementById('taoTimeline').innerHTML = "";
+function clearTaoFeed(): void {
+  requiredElement('taoTimeline').innerHTML = "";
 }
 
-function escapeHtml(str) {
+function escapeHtml(str: unknown): string {
   if (!str) return "";
   return String(str)
     .replace(/&/g, "&amp;")
@@ -1022,10 +1128,12 @@ function escapeHtml(str) {
     .replace(/'/g, "&#039;");
 }
 
-document.getElementById('header-container').innerHTML = serviceHeader('recommend',
+requiredElement('header-container').innerHTML = serviceHeader('recommend',
   `<select id="gradeSelect" class="grade-control" aria-label="학년 변경" onchange="handleGradeChange(this.value)">
     <option value="중학교 1학년">중1</option><option value="중학교 2학년">중2</option><option value="중학교 3학년">중3</option>
-  </select>`, '<button class="btn-secondary-sm" onclick="resetSession()">새 세션</button>');
+  </select>`, '<button class="btn-secondary-sm" data-reset-recommendation onclick="resetSession()">새 세션</button>');
+
+bindHistoryButton(requiredElement('header-container'));
 
 // Preserve existing HTML event bindings when bundled as an ES module.
 Object.assign(window, { handleGradeChange, resetSession, sendQuickPrompt, handleInputKeydown,
@@ -1033,7 +1141,7 @@ Object.assign(window, { handleGradeChange, resetSession, sendQuickPrompt, handle
   copyMarkdownContent, downloadMarkdownFile, printStudyNote });
 
 // Auto-resize textarea
-const chatInput = document.getElementById('chatInput');
+const chatInput = document.getElementById('chatInput') as HTMLTextAreaElement | null;
 if (chatInput) {
   chatInput.addEventListener('input', function() {
     this.style.height = 'auto';
@@ -1043,8 +1151,9 @@ if (chatInput) {
 
 // Close modals on clicking overlay
 window.addEventListener('click', function(e) {
-  if (e.target.classList.contains('modal-overlay')) {
-    e.target.classList.remove('active');
+  const target = e.target;
+  if (target instanceof HTMLElement && target.classList.contains('modal-overlay')) {
+    target.classList.remove('active');
   }
 });
 

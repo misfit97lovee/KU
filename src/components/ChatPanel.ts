@@ -1,6 +1,15 @@
-import { formatText } from '../formatText.js';
+import { formatText } from '../formatText.ts';
+import type { ReadingMessage, ReadingState } from '../types/index.ts';
 
-export function renderChatPanel(container, { state, onSendMessage, onExplainLevel, onCheckUnderstanding, isLoading }) {
+interface ChatPanelOptions {
+  state: ReadingState;
+  onSendMessage: (text: string) => void;
+  onExplainLevel: (level: string) => void;
+  onCheckUnderstanding: () => void;
+  isLoading: boolean;
+}
+
+export function renderChatPanel(container: HTMLElement, { state, onSendMessage, onExplainLevel, onCheckUnderstanding, isLoading }: ChatPanelOptions): void {
   const messages = state.session.recentMessages;
 
   container.innerHTML = `
@@ -131,10 +140,10 @@ export function renderChatPanel(container, { state, onSendMessage, onExplainLeve
   }
 
   // 메시지 전송 처리
-  const form = container.querySelector('#chat-form');
+  const form = container.querySelector<HTMLFormElement>('#chat-form')!;
   form.addEventListener('submit', (e) => {
     e.preventDefault();
-    const input = container.querySelector('#chat-input-text');
+    const input = container.querySelector<HTMLInputElement>('#chat-input-text')!;
     const text = input.value.trim();
     if (!text || isLoading) return;
     input.value = '';
@@ -181,7 +190,7 @@ export function renderChatPanel(container, { state, onSendMessage, onExplainLeve
   });
 }
 
-function escapeHtml(str) {
+function escapeHtml(str: string): string {
   if (!str) return '';
   return str
     .replace(/&/g, '&amp;')
@@ -195,7 +204,7 @@ function escapeHtml(str) {
  * 퀴즈 출제 중에는 3개 버튼([더 간단히], [조금 더 자세히], [이해 확인])을 숨기고,
  * 퀴즈가 끝나거나 일반 설명일 때만 표시하는 판단 함수
  */
-function shouldShowActionButtons(msg, idx, messages, isLoading, state = null) {
+function shouldShowActionButtons(msg: ReadingMessage, idx: number, messages: ReadingMessage[], isLoading: boolean, state: ReadingState | null = null): boolean {
   if (msg.role !== 'assistant' || isLoading) return false;
 
   // 1. 가장 최신의 assistant 메시지에만 액션 버튼 표시 (대화 기록 전반에 중복 노출 방지)

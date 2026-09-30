@@ -1,15 +1,35 @@
-import { formatText } from '../formatText.js';
+import { formatText } from '../formatText.ts';
+import type { ReadingState } from '../types/index.ts';
 
-let currentRecordTab = 'summary';
+type RecordTab = 'summary' | 'reading-note' | 'map';
+type UnderstandingStatus = 'difficult' | 'almost' | 'understood';
+export interface UnderstandingGroups {
+  difficult: string[];
+  almost: string[];
+  understood: string[];
+}
+type UnderstandingSession = Partial<Pick<ReadingState['session'], 'comprehensionChecks' | 'difficultPoints' | 'understoodPoints'>>;
+interface ReadingRecordOptions {
+  state: ReadingState;
+  onGenerateSummary?: () => void;
+  isSummaryLoading: boolean;
+  onGenerateReadingNote?: () => void;
+  isReadingNoteLoading: boolean;
+  onRetryExplain?: (topic: string) => void;
+}
+interface NoteSection { title: string; content: string[] }
+interface CanonicalTopic { id: string; topic: string; status: UnderstandingStatus; updatedAt: number }
 
-export function renderReadingRecordPanel(container, {
+let currentRecordTab: RecordTab = 'summary';
+
+export function renderReadingRecordPanel(container: HTMLElement, {
   state,
   onGenerateSummary,
   isSummaryLoading,
   onGenerateReadingNote,
   isReadingNoteLoading,
   onRetryExplain
-}) {
+}: ReadingRecordOptions): void {
   let activeTab = currentRecordTab;
 
   function update() {
@@ -40,9 +60,9 @@ export function renderReadingRecordPanel(container, {
     `;
 
     // 탭 전환 이벤트
-    container.querySelectorAll('.record-tab-btn').forEach(btn => {
+    container.querySelectorAll<HTMLButtonElement>('.record-tab-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        currentRecordTab = btn.getAttribute('data-tab');
+        currentRecordTab = (btn.getAttribute('data-tab') || 'summary') as RecordTab;
         activeTab = currentRecordTab;
         update();
       });
@@ -69,7 +89,7 @@ export function renderReadingRecordPanel(container, {
     }
 
     // 이해도 지도: 다시 설명받기 버튼 이벤트
-    container.querySelectorAll('.btn-retry-explain').forEach(btn => {
+    container.querySelectorAll<HTMLButtonElement>('.btn-retry-explain').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         const topic = btn.getAttribute('data-topic');
@@ -80,7 +100,7 @@ export function renderReadingRecordPanel(container, {
     });
 
     // 이해도 지도: 카드 클릭 시 다시 설명받기 버튼 토글/활성화
-    container.querySelectorAll('.map-item-card').forEach(card => {
+    container.querySelectorAll<HTMLElement>('.map-item-card').forEach(card => {
       card.addEventListener('click', () => {
         const isSelected = card.classList.contains('selected');
         container.querySelectorAll('.map-item-card').forEach(c => c.classList.remove('selected'));
@@ -94,7 +114,7 @@ export function renderReadingRecordPanel(container, {
   update();
 }
 
-function renderSummaryTab(summary, isSummaryLoading) {
+function renderSummaryTab(summary: string | null, isSummaryLoading: boolean): string {
   return `
     <div style="display: flex; flex-direction: column; gap: 14px; flex: 1;">
       <button
@@ -132,7 +152,7 @@ ${formatText(summary)}
   `;
 }
 
-function renderReadingNoteTab(note, isReadingNoteLoading) {
+function renderReadingNoteTab(note: string | null, isReadingNoteLoading: boolean): string {
   return `
     <div style="display: flex; flex-direction: column; gap: 14px; flex: 1;">
       <button
@@ -168,13 +188,13 @@ function renderReadingNoteTab(note, isReadingNoteLoading) {
   `;
 }
 
-function renderFormattedReadingNote(note) {
+function renderFormattedReadingNote(note: string): string {
   if (!note) return '';
 
   const lines = note.split('\n');
   let title = '오늘의 독서노트';
-  const sections = [];
-  let currentSec = null;
+  const sections: NoteSection[] = [];
+  let currentSec: NoteSection | null = null;
 
   for (let line of lines) {
     const trimmed = line.trim();
@@ -224,7 +244,7 @@ ${formatText(bodyText || '아직 이야기하지 않았어요')}
   `;
 }
 
-function renderUnderstandingMapTab(session) {
+function renderUnderstandingMapTab(session: UnderstandingSession): string {
   const { difficult, almost, understood } = getUnderstandingData(session);
   const totalCount = difficult.length + almost.length + understood.length;
 
@@ -314,7 +334,7 @@ function renderUnderstandingMapTab(session) {
   `;
 }
 
-function renderUnderstandingItemCard(topic, statusType) {
+function renderUnderstandingItemCard(topic: string, statusType: UnderstandingStatus): string {
   return `
     <div class="map-item-card card-${statusType}" data-topic="${escapeHtml(topic)}">
       <div class="map-card-main">
@@ -339,14 +359,14 @@ function renderUnderstandingItemCard(topic, statusType) {
  * 3. difficult -> understood 가 되면 이전 상태(difficult)에서는 완전히 제거된다.
  * 4. 세 상태 영역 간 중복 노출을 100% 원천 차단한다.
  */
-function getUnderstandingData(session) {
+export function getUnderstandingData(session?: UnderstandingSession | null): UnderstandingGroups {
   if (!session) return { difficult: [], almost: [], understood: [] };
 
   const comprehensionChecks = Array.isArray(session.comprehensionChecks) ? session.comprehensionChecks : [];
   const difficultPoints = Array.isArray(session.difficultPoints) ? session.difficultPoints : [];
   const understoodPoints = Array.isArray(session.understoodPoints) ? session.understoodPoints : [];
 
-  function normalizeTopicKey(str) {
+  function normalizeTopicKey(str: string): string {
     if (!str || typeof str !== 'string') return '';
     return str
       .replace(/['"“”‘’`]/g, '')
@@ -357,9 +377,9 @@ function getUnderstandingData(session) {
   }
 
   // canonicalMap: canonicalKey -> { id, topic, status, updatedAt }
-  const canonicalMap = new Map();
+  const canonicalMap = new Map<string, CanonicalTopic>();
 
-  function findExistingKey(normKey) {
+  function findExistingKey(normKey: string): string | null {
     if (canonicalMap.has(normKey)) return normKey;
     for (const [key] of canonicalMap.entries()) {
       if (key.length >= 3 && normKey.length >= 3) {
@@ -413,7 +433,7 @@ function getUnderstandingData(session) {
     const norm = normalizeTopicKey(rawTopic);
     if (!norm) return;
 
-    let finalStatus = 'difficult';
+    let finalStatus: UnderstandingStatus = 'difficult';
     const res = check.result || '';
     if (res.includes('잘 이해') || res.includes('✅')) {
       finalStatus = 'understood';
@@ -426,7 +446,7 @@ function getUnderstandingData(session) {
     const matchedKey = findExistingKey(norm);
     if (matchedKey) {
       // 기존 항목의 상태를 최신 상태로 100% 덮어씀 (이전 상태에서 자동 이탈!)
-      const item = canonicalMap.get(matchedKey);
+      const item = canonicalMap.get(matchedKey)!;
       item.status = finalStatus;
       item.updatedAt = 1000 + idx;
       if (rawTopic.trim().length > item.topic.length) {
@@ -443,9 +463,9 @@ function getUnderstandingData(session) {
   });
 
   // 4. 단 하나의 상태로만 분배 (Single State Guarantee)
-  const difficult = [];
-  const almost = [];
-  const understood = [];
+  const difficult: string[] = [];
+  const almost: string[] = [];
+  const understood: string[] = [];
 
   canonicalMap.forEach(item => {
     if (item.status === 'difficult') {
@@ -460,7 +480,7 @@ function getUnderstandingData(session) {
   return { difficult, almost, understood };
 }
 
-function escapeHtml(str) {
+function escapeHtml(str: string): string {
   if (!str) return '';
   return str
     .replace(/&/g, '&amp;')
@@ -469,4 +489,3 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
 }
-

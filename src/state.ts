@@ -1,3 +1,6 @@
+import { saveSessionSnapshot } from './sessionHistory.ts';
+import type { ComprehensionCheck, Grade, MessageImage, ReadingMessage, ReadingState, TaoLog } from './types/index.ts';
+
 /**
  * READING_AGENT_SPEC.md 기반 상태 관리 및 영속화
  */
@@ -7,7 +10,7 @@ const STORAGE_KEYS = {
   SESSION: 'reading-agent-current-session'
 };
 
-const DEFAULT_STATE = {
+const DEFAULT_STATE: ReadingState = {
   student: {
     grade: null // '중1' | '중2' | '중3' | null
   },
@@ -27,16 +30,32 @@ const DEFAULT_STATE = {
   taoLogs: []
 };
 
+const cloneDefaultState = (): ReadingState => JSON.parse(JSON.stringify(DEFAULT_STATE)) as ReadingState;
+
 class StateManager {
+  state: ReadingState;
+  listeners: Array<(state: ReadingState) => void>;
+
   constructor() {
     this.state = this.loadState();
     this.listeners = [];
   }
 
-  loadState() {
+  loadState(): ReadingState {
     try {
-      const profile = JSON.parse(localStorage.getItem(STORAGE_KEYS.PROFILE) || '{}');
-      const session = JSON.parse(localStorage.getItem(STORAGE_KEYS.SESSION) || '{}');
+      const profile = JSON.parse(localStorage.getItem(STORAGE_KEYS.PROFILE) || '{}') as { grade?: Grade };
+      const session = JSON.parse(localStorage.getItem(STORAGE_KEYS.SESSION) || '{}') as {
+        bookTitle?: string;
+        recentMessages?: ReadingMessage[];
+        difficultPoints?: string[];
+        understoodPoints?: string[];
+        summary?: string | null;
+        readingNote?: string | null;
+        comprehensionChecks?: ComprehensionCheck[];
+        suggestedQuestions?: string[];
+        isQuizActive?: boolean;
+        taoLogs?: TaoLog[];
+      };
 
       return {
         student: {
@@ -59,11 +78,11 @@ class StateManager {
       };
     } catch (e) {
       console.error('로컬스토리지 복원 실패:', e);
-      return JSON.parse(JSON.stringify(DEFAULT_STATE));
+      return cloneDefaultState();
     }
   }
 
-  saveState() {
+  saveState(): void {
     try {
       localStorage.setItem(STORAGE_KEYS.PROFILE, JSON.stringify({
         grade: this.state.student.grade
@@ -86,34 +105,39 @@ class StateManager {
     }
   }
 
-  subscribe(listener) {
+  subscribe(listener: (state: ReadingState) => void): () => void {
     this.listeners.push(listener);
     return () => {
       this.listeners = this.listeners.filter(l => l !== listener);
     };
   }
 
-  notify() {
+  notify(): void {
     this.saveState();
     this.listeners.forEach(fn => fn(this.state));
   }
 
-  getState() {
+  getState(): ReadingState {
     return this.state;
   }
 
-  setGrade(grade) {
+  setGrade(grade: Grade): void {
     this.state.student.grade = grade;
     this.notify();
   }
 
-  setBookTitle(title) {
+  setBookTitle(title: string): void {
     this.state.book.title = title;
     this.notify();
   }
 
-  addMessage(role, content, extra = {}) {
-    const message = {
+  addMessage(role: ReadingMessage['role'], content: string, extra: {
+    image?: MessageImage | null;
+    evidence?: string[];
+    isExplanation?: boolean;
+    isQuizQuestion?: boolean;
+  } = {}): ReadingMessage {
+    const message: ReadingMessage = {
       role, // 'user' | 'assistant'
       content,
       image: extra.image || null, // { data, mimeType }
@@ -127,17 +151,17 @@ class StateManager {
     return message;
   }
 
-  setSummary(summaryText) {
+  setSummary(summaryText: string): void {
     this.state.session.summary = summaryText;
     this.notify();
   }
 
-  setReadingNote(noteText) {
+  setReadingNote(noteText: string): void {
     this.state.session.readingNote = noteText;
     this.notify();
   }
 
-  addComprehensionCheck(check) {
+  addComprehensionCheck(check: Omit<ComprehensionCheck, 'timestamp'> | null | undefined): void {
     if (!check) return;
     if (!this.state.session.comprehensionChecks) {
       this.state.session.comprehensionChecks = [];
@@ -155,7 +179,7 @@ class StateManager {
     this.notify();
   }
 
-  addTaoLog(tao) {
+  addTaoLog(tao: Partial<Omit<TaoLog, 'id' | 'timestamp'>> | null | undefined): void {
     if (!tao) return;
     const log = {
       id: Date.now().toString(),
@@ -171,27 +195,22 @@ class StateManager {
     this.notify();
   }
 
-  setQuizActive(active) {
+  setQuizActive(active: boolean): void {
     this.state.session.isQuizActive = Boolean(active);
     this.notify();
   }
 
-  setSuggestedQuestions(questions) {
+  setSuggestedQuestions(questions: string[]): void {
     this.state.session.suggestedQuestions = Array.isArray(questions)
       ? questions.filter(q => typeof q === 'string' && q.trim().length > 0).slice(0, 3)
       : [];
     this.notify();
   }
 
-  resetSession() {
+  resetSession(): void {
+    saveSessionSnapshot('reading', this.state);
     this.state.book.title = '';
-    this.state.session.recentMessages = [];
-    this.state.session.difficultPoints = [];
-    this.state.session.understoodPoints = [];
-    this.state.session.summary = null;
-    this.state.session.readingNote = null;
-    this.state.session.suggestedQuestions = [];
-    this.state.session.isQuizActive = false;
+    this.state.session = cloneDefaultState().session;
     this.state.taoLogs = [];
     this.notify();
   }
