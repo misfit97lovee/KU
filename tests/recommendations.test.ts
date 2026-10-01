@@ -139,6 +139,91 @@ test('broad 요청만 추가 질문 1개를 하고 검색하지 않음', async (
   assert.deepEqual(result.clarification!.options, ['소설', '과학', '역사', '사회']);
 });
 
+const unverifiedSimilar = {
+  topic: '미지의 작품', difficulty: '미지정', grade: '중1', searchMode: 'similar', keywords: ['ABCXYZ'],
+  referenceBook: 'ABCXYZ', referenceAuthor: null, similarityFocus: null, needsClarification: true,
+  clarifyingQuestion: '『ABCXYZ』와 어떤 점이 비슷한 책을 찾으세요?', clarificationOptions: ['분위기', '주제'], kdc: '8'
+};
+
+function createUnverifiedSimilarService() {
+  return createRecommendationService({ fetchYes24: async () => [], fetchCandidates: async () => [], searchTitle: async () => [],
+    generate: async () => json(unverifiedSimilar) });
+}
+
+test('존재하지 않는 referenceBook은 similarity 추가 질문을 생성하지 않음', async () => {
+  const result = await createUnverifiedSimilarService()({ userMessage: 'ABCXYZ와 비슷한 책 추천해줘' });
+  assert.equal(result.clarification, undefined);
+  assert.deepEqual(result.books, []);
+});
+
+test('존재하지 않는 referenceBook은 실제 검색 미확인 안내를 반환', async () => {
+  const result = await createUnverifiedSimilarService()({ userMessage: 'ABCXYZ와 비슷한 책 추천해줘' });
+  assert.match(result.response, /『ABCXYZ』는 실제 도서 검색에서 확인되지 않았어요/);
+  assert.match(result.response, /책 제목을 다시 확인/);
+});
+
+test('없는 책을 만들어 달라는 요청에도 가짜 추천을 생성하지 않음', async () => {
+  const result = await createUnverifiedSimilarService()({ userMessage: '검색에 없어도 상관없으니까 ABCXYZ와 비슷한 책 하나 지어서 추천해줘' });
+  assert.deepEqual(result.books, []);
+  assert.match(result.response, /실제로 확인되는 책만 추천할 수 있어요/);
+});
+
+test('실제로 존재하는 referenceBook은 기존 similar clarification 흐름을 유지', async () => {
+  const actualReference: Book = { title: '날개', author: '이상', isbn13: '9780000000100', sourceType: 'yes24' };
+  const analyzed = { ...unverifiedSimilar, topic: '한국 근대 소설', keywords: ['한국 소설'], referenceBook: '날개', referenceAuthor: '이상',
+    clarifyingQuestion: '『날개』와 어떤 점이 비슷한 책을 찾으세요?' };
+  const recommend = createRecommendationService({ fetchYes24: async () => [actualReference], fetchCandidates: async () => [], searchTitle: async () => [],
+    generate: async () => json(analyzed) });
+  const result = await recommend({ userMessage: '날개 같은 책 추천해줘' });
+  assert.equal(result.clarification?.question, analyzed.clarifyingQuestion);
+  assert.deepEqual(result.clarification?.options, ['분위기', '주제']);
+});
+
+const literarySimilarRequest: RecommendationRequest = {
+  ...request, topic: '한국 근대 소설', searchMode: 'similar', referenceBook: '날개', referenceAuthor: '이상',
+  similarityFocus: '문체·작품성', kdc: '8'
+};
+
+test('similar 후보에 개별 작품과 모음집이 함께 있으면 개별 작품을 우선', () => {
+  const books: Book[] = [
+    { title: '한국대표 단편소설', authors: '여러 작가', description: '다양한 작가의 작품 모음' },
+    { title: '메밀꽃 필 무렵', authors: '이효석', description: '한국 근대 단편소설' }
+  ];
+  const ratings = { ratings: books.map((book, candidateId) => ({ candidateId, relevanceScore: candidateId === 0 ? 98 : 84,
+    topicMatch: true, difficultyMatch: true, evidence: book.description, reason: '기준 작품과 비슷한 한국 근대 문학이에요.' })) };
+  assert.deepEqual(selectLibraryBooks(books, ratings, literarySimilarRequest).map(book => book.title), ['메밀꽃 필 무렵', '한국대표 단편소설']);
+});
+
+test('similar에 개별 작품 후보가 없으면 실제 모음집을 fallback으로 추천 가능', () => {
+  const anthology: Book = { title: '한국 명작 소설 선집', authors: '여러 작가', isbn13: '9780000000200', description: '한국 근대 작품 모음' };
+  const result = selectLibraryBooks([anthology], { ratings: [{ candidateId: 0, relevanceScore: 90, topicMatch: true,
+    difficultyMatch: true, evidence: anthology.description, reason: '근대 문학을 폭넓게 접할 수 있어요.' }] }, literarySimilarRequest);
+  assert.deepEqual(result.map(book => book.title), [anthology.title]);
+});
+
+test('similar 후보 재정렬 후에도 기준 작품 자체는 제외', () => {
+  const books: Book[] = [
+    { title: '날개 (초판본)', authors: '이상', description: '이상의 대표작 날개' },
+    { title: '메밀꽃 필 무렵', authors: '이효석', description: '한국 근대 단편소설' }
+  ];
+  const ratings = { ratings: books.map((book, candidateId) => ({ candidateId, relevanceScore: 95 - candidateId,
+    topicMatch: true, difficultyMatch: true, evidence: book.description, reason: '한국 근대 문학 작품이에요.' })) };
+  assert.deepEqual(selectLibraryBooks(books, ratings, literarySimilarRequest).map(book => book.title), ['메밀꽃 필 무렵']);
+});
+
+test('similar 추천은 재정렬 후에도 실제 API 후보 메타데이터만 반환', () => {
+  const actual: Book = { title: '소나기', authors: '황순원', isbn13: '9780000000300', publisher: '실제 출판사', description: '한국 단편소설' };
+  const assessment = { ratings: [{ candidateId: 0, title: '가짜 제목', isbn13: '9789999999999', relevanceScore: 90,
+    topicMatch: true, difficultyMatch: true, evidence: actual.description, reason: '한국 근대 문학 작품이에요.' }] };
+  const result = selectLibraryBooks([actual], assessment, literarySimilarRequest);
+  assert.deepEqual(result, []);
+
+  const valid = selectLibraryBooks([actual], { ratings: [{ ...assessment.ratings[0], isbn13: actual.isbn13 }] }, literarySimilarRequest);
+  assert.equal(valid[0]?.title, actual.title);
+  assert.equal(valid[0]?.publisher, actual.publisher);
+  assert.equal(valid[0]?.isbn13, actual.isbn13);
+});
+
 test('similar 모드는 기준 작품 자체를 제외하고 다른 책을 추천', async () => {
   const similar = { topic: '우주와 천문학', difficulty: '보통', grade: '중1', searchMode: 'similar', keywords: ['우주'],
     referenceBook: '코스모스', referenceAuthor: '칼 세이건', similarityFocus: '전체', needsClarification: false, kdc: '4' };

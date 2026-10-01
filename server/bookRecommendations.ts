@@ -174,6 +174,17 @@ export function isReferenceBook(book: Book, referenceBook: string, referenceAuth
   return false;
 }
 
+export function isCollectionLike(book: Book): boolean {
+  const titleAndCategory = [book.title, book.category, book.classNm].filter(Boolean).join(' ');
+  const metadata = [titleAndCategory, book.description].filter(Boolean).join(' ');
+  const authors = String(book.author || book.authors || '');
+
+  if (/(?:선집|전집|작품집|모음집|앤솔로지|anthology)/iu.test(titleAndCategory)) return true;
+  if (/(?:대표작|엄선|모음).{0,10}단편소설|단편소설.{0,10}(?:\d+편?|\d+권|선|모음|컬렉션)/u.test(titleAndCategory)) return true;
+  if (/(?:여러|다양한)\s*(?:작가|\S*\s*작품)|\d+편의\s*(?:단편|작품)|수록\s*작품/u.test(metadata)) return true;
+  return authors.split(/[,;/·ㆍ・]/u).filter(part => part.trim()).length >= 3;
+}
+
 export function findMatchingCandidate(rating: unknown, candidates: Book[]): { book: Book; candidateId: number } | null {
   if (!rating || typeof rating !== 'object' || !Array.isArray(candidates) || candidates.length === 0) return null;
   const r = rating as Record<string, unknown>;
@@ -323,8 +334,14 @@ export function selectLibraryBooks(candidates: Book[], assessment: unknown, requ
     });
   }
 
-  // 점수순 정렬
-  validEntries.sort((a, b) => b.rating.relevanceScore - a.rating.relevanceScore);
+  // similar에서는 개별 작품을 먼저 선택하고, 모음집은 개별 작품이 부족할 때 fallback으로 사용한다.
+  validEntries.sort((a, b) => {
+    if (request.searchMode === 'similar') {
+      const collectionOrder = Number(isCollectionLike(a.book)) - Number(isCollectionLike(b.book));
+      if (collectionOrder !== 0) return collectionOrder;
+    }
+    return b.rating.relevanceScore - a.rating.relevanceScore;
+  });
 
   // 1차 패스: 아직 추천된 적 없는 새로운 작품 선별 (동일 작품 및 중복 후보 제거)
   for (const { book, rating } of validEntries) {
@@ -499,9 +516,10 @@ const EVALUATION_SYSTEM = `도서 추천의 관련성 검증자다. 제공된 �
 1. 주제 부합(topicMatch):
 - 요청 분야(문학, 과학, 역사 등) 또는 요청 작가와 일치해야 한다.
 - similar/author 모드에서는 해당 분야/작가의 대표작, 명작, 단편선, 다양한 시리즈를 폭넓게 인정한다.
+- similar 모드에서 특정 작품과 비슷한 책을 찾을 때는 개별 작품을 우선 평가하고, 선집·전집·작품집·모음집은 개별 작품 후보가 부족할 때만 보충 후보로 평가한다.
 2. 난이도 부합(difficultyMatch):
 - 유아/초등 저학년용 만화나 너무 쉬운 입문서가 아니면 difficultyMatch=true이다.
-- 제목이나 분야(classNm)로 수준과 대표성이 명확한 경우(예: '한국단편소설 40', '이상 소설 전집', '소나기 : 한국인이 사랑하는 단편소설', '개미', '나무', '파피용') 적극적으로 80~95점의 점수를 부여한다.
+- 제목이나 분야(classNm)로 수준과 대표성이 명확한 경우 적극적으로 80~95점의 점수를 부여한다.
 3. specificTitle+exact 모드만 정확한 해당 작품이어야 하며, similar/topic/author 모드는 폭넓게 관련 도서를 인정한다.
 4. 중요: 조건에 맞는 책이 여러 권 있다면, 상위 3권만 평가하지 말고 **조건에 부합하는 모든 후보(최대 15권)를 ratings 배열에 전부 포함하여 평가**해라. (시스템이 이전 추천 도서와 중복되지 않는 새로운 책을 다양하게 선별할 수 있도록 함).
 5. 추천 이유(reason) 엄격 원칙:
@@ -573,6 +591,33 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
         referenceAuthor: textValue(parsed.referenceAuthor), similarityFocus: textValue(parsed.similarityFocus),
         needsClarification: !clarificationAlreadyAsked && parsed.needsClarification === true,
         kdc: typeof parsed.kdc === 'string' && /^[0-9]$/.test(parsed.kdc) ? parsed.kdc : '8' };
+
+      // similar 기준 도서는 추가 질문을 보내기 전에 실제 API 결과에서 먼저 확인한다.
+      if (request.searchMode === 'similar' && request.referenceBook) {
+        trace.libraryAttempted = true;
+        const [yes24ReferenceBooks, libraryReferenceBooks] = await Promise.all([
+          typeof fetchYes24 === 'function'
+            ? fetchYes24({ query: request.referenceBook, pageSize: 10 }).catch(() => [])
+            : Promise.resolve([] as Book[]),
+          searchTitle(request.referenceBook).catch(() => [])
+        ]);
+        const referenceCandidates = [...yes24ReferenceBooks, ...libraryReferenceBooks];
+        const referenceVerified = referenceCandidates.some(book => {
+          if (!isReferenceBook(book, request!.referenceBook!, request!.referenceAuthor)) return false;
+          return !request!.referenceAuthor || hasText(book.author || book.authors, request!.referenceAuthor);
+        });
+        onEvent({ stage: 'reference_validation', referenceBook: request.referenceBook,
+          candidateCount: referenceCandidates.length, verified: referenceVerified });
+
+        if (!referenceVerified) {
+          const notFoundMessage = `『${request.referenceBook}』는 실제 도서 검색에서 확인되지 않았어요.\n책 제목을 다시 확인하거나, 찾고 싶은 책의 주제나 분위기를 알려주세요.`;
+          const asksToInvent = /(?:만들|지어|없는책|없는책이어도|검색에없어도|실제로없어도|존재하지않아도)/u.test(normalize(userMessage));
+          const response = asksToInvent
+            ? `실제로 확인되는 책만 추천할 수 있어요.\n대신 비슷한 주제나 분위기의 실제 책을 찾아드릴게요.\n\n${notFoundMessage}`
+            : notFoundMessage;
+          return { ...result([]), response };
+        }
+      }
 
       if (request.needsClarification) {
         const broad = request.searchMode === 'broad';
