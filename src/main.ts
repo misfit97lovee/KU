@@ -66,6 +66,7 @@ function renderApp(): void {
 
   // 2. 패널 1: 책 내용 (텍스트 및 사진 업로드)
   renderBookInputPanel(panelBookEl, {
+    bookTitle: state.book.title,
     onSendToChat: (text) => {
       handleSendMessage(text);
       switchMobileTab('panel-chat');

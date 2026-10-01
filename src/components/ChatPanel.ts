@@ -16,8 +16,9 @@ export function renderChatPanel(container: HTMLElement, { state, onSendMessage, 
     <div class="chat-container">
       <div class="panel-header">
         <div class="panel-title">
-          <span>함께 읽기</span>
+          <span>${escapeHtml(state.book.title || '함께 읽기')}</span>
         </div>
+        <div class="panel-subtitle">책을 읽으며 궁금한 내용을 함께 살펴보세요.</div>
       </div>
 
       <div class="chat-messages" id="chat-messages-box" role="log" aria-live="polite">

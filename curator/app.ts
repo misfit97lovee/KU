@@ -630,6 +630,7 @@ function initApp(): void {
   const initialGreeting = `좋아하는 주제나 이야기 하나만 들려줘. 너에게 어울리는 책을 함께 찾아볼게.`;
   
   appendLibrarianMessage(initialGreeting);
+  document.querySelector('#chatMessages .msg-group:last-child')?.classList.add('initial-greeting');
 
   renderTaoTurn({
     turn: 0,

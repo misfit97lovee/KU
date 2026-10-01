@@ -2,11 +2,12 @@ import type { MessageImage } from '../types/index.ts';
 import { openCameraModal } from './CameraModal.ts';
 
 interface BookInputOptions {
+  bookTitle?: string;
   onSendToChat: (text: string) => void;
   onSendImage: (payload: { text: string; image: MessageImage; previewUrl: string | null }) => void;
 }
 
-export function renderBookInputPanel(container: HTMLElement, { onSendToChat, onSendImage }: BookInputOptions): void {
+export function renderBookInputPanel(container: HTMLElement, { bookTitle = '', onSendToChat, onSendImage }: BookInputOptions): void {
   let activeTab: 'image' | 'direct' = 'image'; // 우선순위 1이므로 기본 탭을 '책 사진 올리기'로 설정
   let selectedFile: File | null = null;
   let previewUrl: string | null = null;
@@ -16,11 +17,15 @@ export function renderBookInputPanel(container: HTMLElement, { onSendToChat, onS
     container.innerHTML = `
       <div class="panel-header">
         <div class="panel-title">
-          <span>책 내용</span>
+          <span>현재 책</span>
         </div>
       </div>
 
       <div class="panel-body">
+        <div class="book-context-summary">
+          <span>읽고 있는 책</span>
+          <strong>${escapeHtml(bookTitle || '책 제목을 입력해 주세요')}</strong>
+        </div>
         <div class="book-tabs">
           <button class="book-tab-btn ${activeTab === 'image' ? 'active' : ''}" data-tab="image">
             사진
@@ -217,10 +222,10 @@ function renderImageTab(selectedFile: File | null, previewUrl: string | null): s
       ` : `
         <div class="photo-upload-actions">
           <button type="button" id="btn-open-camera" class="btn-secondary-sm photo-action-btn">
-            📷 사진 찍기
+            사진 찍기
           </button>
           <button type="button" id="btn-select-file" class="btn-secondary-sm photo-action-btn">
-            📁 파일에서 선택
+            파일에서 선택
           </button>
         </div>
 
@@ -282,4 +287,8 @@ function fileToBase64(file: File): Promise<string> {
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }

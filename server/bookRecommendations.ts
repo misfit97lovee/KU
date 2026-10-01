@@ -570,7 +570,7 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
     }
 
     const result = (books: RecommendedBook[]): RecommendationResponse => ({ success: true, books,
-      response: books.length ? (books[0]?.sourceType === 'web' ? '도서관 소장 목록에서는 딱 맞는 책을 찾지 못해서, 범위를 넓혀 찾아봤어.' : `원하는 조건에 맞는 책 ${books.length}권을 찾았어.`) : NO_MATCH_MESSAGE,
+      response: books.length ? (books[0]?.sourceType === 'web' ? '도서관 소장 목록에서는 딱 맞는 책을 찾지 못해서, 범위를 넓혀 찾아봤어요.' : books.length === 1 ? '이 책이 가장 잘 맞아요.' : `조건에 잘 맞는 책 ${books.length}권을 골랐어요.`) : NO_MATCH_MESSAGE,
       request, candidateCount: trace.libraryCandidateCount, kdc: request?.kdc || null, search: trace });
     try {
       const analysis = await generate({ stage: 'analyze', json: true, system: ANALYSIS_SYSTEM,

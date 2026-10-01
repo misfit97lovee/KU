@@ -20,7 +20,7 @@ interface ReadingRecordOptions {
 interface NoteSection { title: string; content: string[] }
 interface CanonicalTopic { id: string; topic: string; status: UnderstandingStatus; updatedAt: number }
 
-let currentRecordTab: RecordTab = 'summary';
+let currentRecordTab: RecordTab = 'map';
 
 export function renderReadingRecordPanel(container: HTMLElement, {
   state,

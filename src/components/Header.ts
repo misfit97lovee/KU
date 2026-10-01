@@ -16,6 +16,7 @@ export function serviceHeader(activePage: ActivePage, gradeControl: string, rese
       <nav class="service-nav" aria-label="주 메뉴">
         <a href="/curator/index.html" ${activePage === 'recommend' ? 'aria-current="page"' : ''}>책 추천</a>
         <a href="/" ${activePage === 'reading' ? 'aria-current="page"' : ''}>읽기 도우미</a>
+        <a href="/#panel-record">독서 기록</a>
       </nav>
       <div class="header-right"><button type="button" class="btn-secondary-sm" data-open-history>저장기록</button>${gradeControl}${resetControl}</div>
     </div>`;
