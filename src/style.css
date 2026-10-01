@@ -9,6 +9,7 @@
 .panel-book { align-self: start; }
 .panel-chat, .panel-record { min-height: calc(100dvh - 128px); }
 .panel-chat .chat-container { min-height: inherit; }
+.panel-record .phase-placeholder { border: 0; background: transparent; padding: 24px 8px; }
 .book-context-summary { display: grid; gap: 4px; padding: 13px 14px; border-radius: var(--radius-md); background: var(--primary-light); }
 .book-context-summary span { color: var(--primary); font-size: 11px; font-weight: 500; }
 .book-context-summary strong { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
