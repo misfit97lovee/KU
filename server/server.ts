@@ -46,6 +46,7 @@ interface ParsedGeminiResponse {
   summary: string | null;
   comprehensionCheck: Omit<ComprehensionCheck, 'timestamp'> | null;
   tao: Omit<TaoLog, 'id' | 'timestamp'>;
+  extractedText?: string | null;
 }
 
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
@@ -67,6 +68,13 @@ const DATA4LIBRARY_BASE_URL = process.env.DATA4LIBRARY_BASE_URL || 'https://data
 
 // YES24 API 설정
 const YES24_API_KEY = (process.env.YES24_API || '').trim();
+
+export { normalizeText, validateEvidence } from './guardrails.ts';
+import { sanitizeError as baseSanitizeError, normalizeText, validateEvidence } from './guardrails.ts';
+
+export function sanitizeError(error: unknown): string {
+  return baseSanitizeError(error, [apiKey, DATA4LIBRARY_AUTH_KEY, YES24_API_KEY]);
+}
 
 // 미들웨어 설정 (이미지 Base64 처리를 위해 20MB로 넉넉하게 설정)
 app.use(cors());
@@ -224,16 +232,15 @@ app.get('/api/library/items', async (req, res) => {
       books
     });
   } catch (error: unknown) {
-    console.error('[API /api/library/items 에러]:', errorMessage(error));
+    console.error('[API /api/library/items 에러]:', sanitizeError(error));
     return res.status(500).json({
-      error: '도서관 소장도서 목록을 가져오는 중 오류가 발생했습니다.',
-      details: errorMessage(error)
+      error: '지금은 책 정보를 불러오지 못했어요. 잠시 후 다시 시도해 주세요.'
     });
   }
 });
 
 /**
- * Gemini API 호출 헬퍼 (호환 모델 및 재시도 지원)
+ * Gemini API 호출 헬퍼 (호환 모델 및 재시도 지원, 타임아웃 및 키 헤더 전송)
  */
 async function callGemini(contents: GeminiContent[], systemInstruction: string, preferredModel = 'gemini-flash-latest'): Promise<{ text: string; modelUsed: string }> {
   if (!apiKey) {
@@ -256,7 +263,7 @@ async function callGemini(contents: GeminiContent[], systemInstruction: string, 
   for (const model of modelsToTry) {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
         const payload = {
           contents,
           systemInstruction: {
@@ -270,8 +277,12 @@ async function callGemini(contents: GeminiContent[], systemInstruction: string, 
 
         const response = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey
+          },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(30000)
         });
 
         const data = await response.json() as GeminiResponse;
@@ -305,6 +316,10 @@ async function callGemini(contents: GeminiContent[], systemInstruction: string, 
       } catch (err: unknown) {
         const caught = err instanceof Error ? err : new Error(String(err));
         lastError = caught;
+        if (caught.name === 'TimeoutError' || caught.name === 'AbortError') {
+          console.warn(`[Gemini Timeout] ${model} 호출 시간 초과`);
+          continue;
+        }
         if (caught.message && (caught.message.includes('no longer available') || caught.message.includes('high demand'))) {
           break;
         }
@@ -342,6 +357,7 @@ function parseGeminiResponse(rawText: string): ParsedGeminiResponse {
 
   let evidence: string[] = [];
   let suggestedQuestions: string[] = [];
+  let extractedText: string | null = null;
 
   try {
     const parsed = JSON.parse(cleaned) as {
@@ -349,12 +365,17 @@ function parseGeminiResponse(rawText: string): ParsedGeminiResponse {
       summary?: string;
       evidence?: unknown[];
       suggestedQuestions?: unknown[];
+      extractedText?: string;
+      ocrText?: string;
       comprehensionCheck?: { topic?: string; result?: string; difficultPart?: string | null };
       tao?: Partial<Omit<TaoLog, 'id' | 'timestamp'>>;
     };
     if (parsed && typeof parsed === 'object') {
       message = parsed.message || parsed.summary || rawText;
       summary = parsed.summary || null;
+      extractedText = (typeof parsed.extractedText === 'string' && parsed.extractedText.trim())
+        || (typeof parsed.ocrText === 'string' && parsed.ocrText.trim())
+        || null;
       if (Array.isArray(parsed.evidence)) {
         evidence = parsed.evidence
           .map((e: unknown) => typeof e === 'string' ? e.trim() : '')
@@ -412,7 +433,8 @@ function parseGeminiResponse(rawText: string): ParsedGeminiResponse {
     suggestedQuestions,
     summary,
     comprehensionCheck,
-    tao
+    tao,
+    extractedText
   };
 }
 
@@ -470,7 +492,11 @@ app.post('/api/chat', async (req, res) => {
 
     const preferredModel = process.env.GEMINI_MODEL || 'gemini-flash-latest';
     const { text, modelUsed } = await callGemini(contents, systemPrompt, preferredModel);
-    const { message, evidence = [], suggestedQuestions = [], tao, comprehensionCheck } = parseGeminiResponse(text);
+    const { message, evidence: rawEvidence = [], suggestedQuestions = [], tao, comprehensionCheck, extractedText } = parseGeminiResponse(text);
+
+    // 실제 입력된 텍스트 및 추출 텍스트에서 검증된 근거만 필터링
+    const userMessages = messages.filter(m => m.role === 'user').map(m => m.content);
+    const verifiedEvidence = validateEvidence(rawEvidence, { userMessages, extractedText });
 
     const featureName = image ? '책 사진 분석' : (explanationLevel ? `설명 전환(${explanationLevel})` : '대화 응답');
     console.log(`[Gemini 호출 성공] 기능: ${featureName} | 사용 모델: ${modelUsed}`);
@@ -482,7 +508,7 @@ app.post('/api/chat', async (req, res) => {
 
     return res.json({
       message,
-      evidence: isQuizQuestion ? [] : evidence,
+      evidence: isQuizQuestion ? [] : verifiedEvidence,
       suggestedQuestions: isQuizQuestion ? [] : suggestedQuestions,
       tao,
       comprehensionCheck,
@@ -491,10 +517,9 @@ app.post('/api/chat', async (req, res) => {
       statePatch: {}
     });
   } catch (error: unknown) {
-    console.error('[API /api/chat 에러]:', errorMessage(error));
+    console.error('[API /api/chat 에러]:', sanitizeError(error));
     return res.status(500).json({
-      error: 'AI 응답을 생성하는 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.',
-      details: errorMessage(error)
+      error: '설명을 만드는 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요.'
     });
   }
 });
@@ -539,10 +564,9 @@ app.post('/api/summary', async (req, res) => {
       modelUsed
     });
   } catch (error: unknown) {
-    console.error('[API /api/summary 에러]:', errorMessage(error));
+    console.error('[API /api/summary 에러]:', sanitizeError(error));
     return res.status(500).json({
-      error: '독서 요약을 생성하는 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.',
-      details: errorMessage(error)
+      error: '설명을 만드는 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요.'
     });
   }
 });
@@ -605,10 +629,9 @@ app.post('/api/reading-note', async (req, res) => {
       modelUsed
     });
   } catch (error: unknown) {
-    console.error('[API /api/reading-note 에러]:', errorMessage(error));
+    console.error('[API /api/reading-note 에러]:', sanitizeError(error));
     return res.status(500).json({
-      error: '독서노트를 생성하는 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.',
-      details: errorMessage(error)
+      error: '설명을 만드는 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요.'
     });
   }
 });
@@ -640,24 +663,34 @@ const recommendBooks = createRecommendationService({
 });
 
 app.post('/api/recommend-books', async (req, res) => {
-  const { userMessage, userGrade, userInterests, chatHistory, recommendedBooks } = req.body as Partial<RecommendationInput>;
-  if (typeof userMessage !== 'string' || !userMessage.trim()) {
-    return res.status(400).json({ error: '사용자 메시지가 필요합니다.' });
+  try {
+    const { userMessage, userGrade, userInterests, chatHistory, recommendedBooks } = req.body as Partial<RecommendationInput>;
+    if (typeof userMessage !== 'string' || !userMessage.trim()) {
+      return res.status(400).json({ error: '사용자 메시지가 필요합니다.' });
+    }
+    const result = await recommendBooks({
+      userMessage: userMessage.trim(),
+      userGrade: typeof userGrade === 'string' ? userGrade : '중1',
+      userInterests: Array.isArray(userInterests) ? userInterests : [],
+      chatHistory: Array.isArray(chatHistory) ? chatHistory : [],
+      recommendedBooks: Array.isArray(recommendedBooks) ? recommendedBooks : []
+    });
+    console.log('[Book recommendation result]', JSON.stringify({
+      count: result.books.length, sourceTypes: result.books.map(b => b.sourceType), search: result.search
+    }));
+    return res.json(result);
+  } catch (error: unknown) {
+    console.error('[API /api/recommend-books 에러]:', sanitizeError(error));
+    return res.status(500).json({
+      error: '지금은 책 정보를 불러오지 못했어요. 잠시 후 다시 시도해 주세요.'
+    });
   }
-  const result = await recommendBooks({
-    userMessage: userMessage.trim(),
-    userGrade: typeof userGrade === 'string' ? userGrade : '중1',
-    userInterests: Array.isArray(userInterests) ? userInterests : [],
-    chatHistory: Array.isArray(chatHistory) ? chatHistory : [],
-    recommendedBooks: Array.isArray(recommendedBooks) ? recommendedBooks : []
-  });
-  console.log('[Book recommendation result]', JSON.stringify({
-    count: result.books.length, sourceTypes: result.books.map(b => b.sourceType), search: result.search
-  }));
-  return res.json(result);
 });
 
-app.listen(PORT, () => {
-  console.log(`[Reading Agent Server] 포트 ${PORT}에서 서버가 실행 중입니다.`);
-  console.log(`[API Key 상태]: ${apiKey ? '정상 등록됨' : '미등록 (확인 필요)'}`);
-});
+const isRunningTests = process.execArgv.includes('--test') || process.env.NODE_ENV === 'test';
+if (!isRunningTests) {
+  app.listen(PORT, () => {
+    console.log(`[Reading Agent Server] 포트 ${PORT}에서 서버가 실행 중입니다.`);
+    console.log(`[API Key 상태]: ${apiKey ? '정상 등록됨' : '미등록 (확인 필요)'}`);
+  });
+}

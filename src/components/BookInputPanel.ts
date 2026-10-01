@@ -1,4 +1,5 @@
 import type { MessageImage } from '../types/index.ts';
+import { openCameraModal } from './CameraModal.ts';
 
 interface BookInputOptions {
   onSendToChat: (text: string) => void;
@@ -9,6 +10,7 @@ export function renderBookInputPanel(container: HTMLElement, { onSendToChat, onS
   let activeTab: 'image' | 'direct' = 'image'; // 우선순위 1이므로 기본 탭을 '책 사진 올리기'로 설정
   let selectedFile: File | null = null;
   let previewUrl: string | null = null;
+  let activeCameraCleanup: (() => void) | null = null;
 
   function update() {
     container.innerHTML = `
@@ -37,6 +39,10 @@ export function renderBookInputPanel(container: HTMLElement, { onSendToChat, onS
     container.querySelectorAll('.book-tab-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         activeTab = btn.getAttribute('data-tab') === 'direct' ? 'direct' : 'image';
+        if (activeTab === 'direct') {
+          activeCameraCleanup?.();
+          activeCameraCleanup = null;
+        }
         update();
       });
     });
@@ -56,11 +62,35 @@ export function renderBookInputPanel(container: HTMLElement, { onSendToChat, onS
       });
     }
 
-    // 파일 업로드 이벤트 바인딩
+    // 파일 업로드 및 카메라 촬영 이벤트 바인딩
     const fileInput = container.querySelector<HTMLInputElement>('#book-photo-input');
+    const openCameraBtn = container.querySelector('#btn-open-camera');
+    const selectFileBtn = container.querySelector('#btn-select-file');
     const dropZone = container.querySelector<HTMLElement>('#photo-dropzone');
     const removeBtn = container.querySelector('#btn-remove-photo');
     const submitImageBtn = container.querySelector('#btn-submit-book-photo');
+
+    if (openCameraBtn) {
+      openCameraBtn.addEventListener('click', () => {
+        activeCameraCleanup?.();
+        activeCameraCleanup = openCameraModal({
+          onCapture: (file: File) => {
+            activeCameraCleanup = null;
+            handleFileSelect(file);
+          },
+          onSelectFileFallback: () => {
+            activeCameraCleanup = null;
+            fileInput?.click();
+          }
+        });
+      });
+    }
+
+    if (selectFileBtn) {
+      selectFileBtn.addEventListener('click', () => {
+        fileInput?.click();
+      });
+    }
 
     if (fileInput) {
       fileInput.addEventListener('change', (e) => {
@@ -185,6 +215,15 @@ function renderImageTab(selectedFile: File | null, previewUrl: string | null): s
           선택된 파일: ${selectedFile?.name || ''} (${Math.round((selectedFile?.size || 0) / 1024)} KB)
         </div>
       ` : `
+        <div class="photo-upload-actions">
+          <button type="button" id="btn-open-camera" class="btn-secondary-sm photo-action-btn">
+            📷 사진 찍기
+          </button>
+          <button type="button" id="btn-select-file" class="btn-secondary-sm photo-action-btn">
+            📁 파일에서 선택
+          </button>
+        </div>
+
         <div
           id="photo-dropzone"
           class="phase-placeholder photo-dropzone"
@@ -192,7 +231,7 @@ function renderImageTab(selectedFile: File | null, previewUrl: string | null): s
         >
           <div style="font-weight: 500; color: var(--text-primary); margin-top: 4px;">책 페이지를 올려주세요</div>
           <p style="color: var(--text-secondary); font-size: 12px; margin-top: 2px;">
-            JPG, PNG
+            JPG, PNG (드래그하거나 위 버튼을 눌러주세요)
           </p>
         </div>
       `}

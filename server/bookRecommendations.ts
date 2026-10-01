@@ -110,7 +110,27 @@ export function safeSourceUrl(value: unknown): string | null {
 }
 
 export function parseJson<T = UnknownRecord>(text: string): T {
-  return JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')) as T;
+  const trimmed = text.trim();
+  const unquoted = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  try {
+    return JSON.parse(unquoted) as T;
+  } catch (err) {
+    const firstBrace = unquoted.indexOf('{');
+    const lastBrace = unquoted.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        return JSON.parse(unquoted.slice(firstBrace, lastBrace + 1)) as T;
+      } catch {}
+    }
+    const firstBracket = unquoted.indexOf('[');
+    const lastBracket = unquoted.lastIndexOf(']');
+    if (firstBracket !== -1 && lastBracket > firstBracket) {
+      try {
+        return JSON.parse(unquoted.slice(firstBracket, lastBracket + 1)) as T;
+      } catch {}
+    }
+    throw err;
+  }
 }
 
 export function matchesRequestedTitle(title: string, request: Pick<RecommendationRequest, 'searchMode' | 'specificTitle'>): boolean {
@@ -138,6 +158,83 @@ export function getBaseTitle(title: unknown): string {
     .trim();
 }
 
+export function isReferenceBook(book: Book, referenceBook: string, referenceAuthor?: string | null): boolean {
+  const normRef = normalize(getBaseTitle(referenceBook));
+  if (!normRef) return false;
+  const normBase = normalize(getBaseTitle(book.title));
+  if (normBase === normRef) return true;
+  if (normBase.includes(normRef)) {
+    if (referenceAuthor && (hasText(book.author || book.authors, referenceAuthor) || normBase.includes(normalize(referenceAuthor)))) {
+      return true;
+    }
+    if (normBase.startsWith(normRef) || normBase.endsWith(normRef)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function findMatchingCandidate(rating: unknown, candidates: Book[]): { book: Book; candidateId: number } | null {
+  if (!rating || typeof rating !== 'object' || !Array.isArray(candidates) || candidates.length === 0) return null;
+  const r = rating as Record<string, unknown>;
+
+  // 1. candidateId 우선 검증
+  if (typeof r.candidateId === 'number' && Number.isInteger(r.candidateId) && r.candidateId >= 0 && r.candidateId < candidates.length) {
+    const candidate = candidates[r.candidateId];
+    if (candidate) {
+      if (typeof r.isbn13 === 'string' && r.isbn13.trim()) {
+        const cleanIsbn = r.isbn13.trim();
+        // 후보의 ISBN과 일치하지 않는 경우 실제 후보 목록에서 검색
+        if (candidate.isbn13 && candidate.isbn13 !== cleanIsbn) {
+          const actualCandidate = candidates.find(c => c.isbn13 && c.isbn13 === cleanIsbn);
+          if (!actualCandidate) return null; // 후보군에 전혀 없는 가짜 ISBN 차단
+          const actualIndex = candidates.indexOf(actualCandidate);
+          return { book: actualCandidate, candidateId: actualIndex };
+        }
+      }
+      return { book: candidate, candidateId: r.candidateId };
+    }
+  }
+
+  // 2. isbn13 매칭
+  if (typeof r.isbn13 === 'string' && r.isbn13.trim()) {
+    const cleanIsbn = r.isbn13.trim();
+    const candidateIndex = candidates.findIndex(c => c.isbn13 && c.isbn13 === cleanIsbn);
+    if (candidateIndex !== -1) {
+      return { book: candidates[candidateIndex]!, candidateId: candidateIndex };
+    }
+  }
+
+  // 3. 정규화 제목 + 저자 fallback 매칭
+  if (typeof r.title === 'string' && r.title.trim()) {
+    const normTitle = normalize(r.title);
+    const candidateIndex = candidates.findIndex(c => {
+      const matchTitle = normalize(c.title) === normTitle || normalize(getBaseTitle(c.title)) === normTitle;
+      if (!matchTitle) return false;
+      if (typeof r.author === 'string' && r.author.trim()) {
+        return hasText(c.author || c.authors, r.author);
+      }
+      return true;
+    });
+    if (candidateIndex !== -1) {
+      return { book: candidates[candidateIndex]!, candidateId: candidateIndex };
+    }
+  }
+
+  return null;
+}
+
+export function validateBooksAgainstCandidates(books: RecommendedBook[], candidates: Book[]): RecommendedBook[] {
+  if (!Array.isArray(books) || !Array.isArray(candidates) || candidates.length === 0) return [];
+  const candidateIsbns = new Set(candidates.map(c => c.isbn13).filter(Boolean));
+  const candidateTitles = new Set(candidates.map(c => normalize(getBaseTitle(c.title))));
+  return books.filter(b => {
+    if (b.isbn13 && candidateIsbns.has(b.isbn13)) return true;
+    if (candidateTitles.has(normalize(getBaseTitle(b.title)))) return true;
+    return false;
+  }).slice(0, 3);
+}
+
 function recommendedBookFromCandidate(book: Book, rating: CandidateRating, request: RecommendationRequest): RecommendedBook {
   const author = book.author || book.authors || '';
   const cover = book.cover || book.bookImageURL || '';
@@ -158,8 +255,16 @@ function recommendedBookFromCandidate(book: Book, rating: CandidateRating, reque
   };
 }
 
-export function selectLibraryBooks(candidates: Book[], assessment: CandidateAssessment, request: RecommendationRequest, excludedTitles: Set<string> = new Set()): RecommendedBook[] {
+export function selectLibraryBooks(candidates: Book[], assessment: unknown, request: RecommendationRequest, excludedTitles: Set<string> = new Set()): RecommendedBook[] {
+  if (!Array.isArray(candidates) || candidates.length === 0) return [];
+  if (!assessment || typeof assessment !== 'object') return [];
+
+  const rawRatings = Array.isArray((assessment as Record<string, unknown>).ratings)
+    ? ((assessment as Record<string, unknown>).ratings as unknown[])
+    : [];
+
   const selected: RecommendedBook[] = [];
+  const seenKeys = new Set<string>();
   const seenBaseTitles = new Set<string>();
   const requiresAuthor = request.searchMode === 'author';
 
@@ -169,28 +274,66 @@ export function selectLibraryBooks(candidates: Book[], assessment: CandidateAsse
     normalizedExcluded.add(normalize(getBaseTitle(request.referenceBook)));
   }
 
-  // 유효한 후보군을 점수순으로 정렬
-  const validRatings = (assessment?.ratings || []).filter(rating => {
-    if (!Number.isInteger(rating.candidateId)) return false;
-    const book = candidates[rating.candidateId];
-    if (!book || !validScore(rating.relevanceScore) || rating.topicMatch !== true || rating.difficultyMatch !== true) return false;
+  // 유효한 후보군 매칭 및 필터링
+  interface ValidatedCandidateEntry {
+    book: Book;
+    rating: CandidateRating;
+  }
+
+  const validEntries: ValidatedCandidateEntry[] = [];
+
+  for (const rawRating of rawRatings) {
+    if (!rawRating || typeof rawRating !== 'object') continue;
+    const r = rawRating as Record<string, unknown>;
+
+    // 1. 후보 존재 여부 서버 재검증 (candidateId, isbn13, title)
+    const match = findMatchingCandidate(r, candidates);
+    if (!match) continue;
+
+    const book = match.book;
+    const relevanceScore = r.relevanceScore;
+
+    if (!validScore(relevanceScore) || r.topicMatch !== true || r.difficultyMatch !== true) continue;
+
+    // 2. similar 모드 기준 도서 자체 및 동일 판본 제외
+    if (request.searchMode === 'similar' && request.referenceBook) {
+      if (isReferenceBook(book, request.referenceBook, request.referenceAuthor)) {
+        continue;
+      }
+    }
+
     const author = book.author || book.authors;
     const category = book.category || book.classNm;
-    if (!matchesRequestedTitle(book.title, request) || (requiresAuthor && request.author && !hasText(author, request.author))) return false;
-    const evidenceText = [book.title, author, category, book.description].filter(Boolean).join('\n');
-    if (!textValue(rating.evidence) || !hasText(evidenceText, rating.evidence)) return false;
-    if (!textValue(rating.reason)) return false;
-    return true;
-  }).sort((a, b) => b.relevanceScore - a.relevanceScore);
+    if (!matchesRequestedTitle(book.title, request) || (requiresAuthor && request.author && !hasText(author, request.author))) continue;
 
-  // 1차 패스: 아직 추천된 적 없는 새로운 작품 선별 (동일 작품 중복 제거)
-  for (const rating of validRatings) {
-    const book = candidates[rating.candidateId];
-    if (!book) continue;
+    const evidenceText = [book.title, author, category, book.description].filter(Boolean).join('\n');
+    if (!textValue(r.evidence) || !hasText(evidenceText, r.evidence)) continue;
+    if (!textValue(r.reason)) continue;
+
+    validEntries.push({
+      book,
+      rating: {
+        candidateId: match.candidateId,
+        relevanceScore: Number(relevanceScore),
+        topicMatch: true,
+        difficultyMatch: true,
+        evidence: String(r.evidence),
+        reason: String(r.reason)
+      }
+    });
+  }
+
+  // 점수순 정렬
+  validEntries.sort((a, b) => b.rating.relevanceScore - a.rating.relevanceScore);
+
+  // 1차 패스: 아직 추천된 적 없는 새로운 작품 선별 (동일 작품 및 중복 후보 제거)
+  for (const { book, rating } of validEntries) {
     const baseTitle = getBaseTitle(book.title);
     const normBase = normalize(baseTitle);
-    if (!normBase || seenBaseTitles.has(normBase) || normalizedExcluded.has(normBase)) continue;
+    const uniqueKey = book.isbn13 || normBase;
+    if (!normBase || seenKeys.has(uniqueKey) || seenBaseTitles.has(normBase) || normalizedExcluded.has(normBase)) continue;
 
+    seenKeys.add(uniqueKey);
     seenBaseTitles.add(normBase);
     selected.push(recommendedBookFromCandidate(book, rating, request));
     if (selected.length >= 3) break;
@@ -198,13 +341,13 @@ export function selectLibraryBooks(candidates: Book[], assessment: CandidateAsse
 
   // 2차 패스: 이전 추천 목록이 없는(normalizedExcluded가 빈) 초기 요청에서만 보충 (동일 작품 중복은 여전히 방지)
   if (selected.length < 3 && normalizedExcluded.size === 0) {
-    for (const rating of validRatings) {
-      const book = candidates[rating.candidateId];
-      if (!book) continue;
+    for (const { book, rating } of validEntries) {
       const baseTitle = getBaseTitle(book.title);
       const normBase = normalize(baseTitle);
-      if (!normBase || seenBaseTitles.has(normBase)) continue;
+      const uniqueKey = book.isbn13 || normBase;
+      if (!normBase || seenKeys.has(uniqueKey) || seenBaseTitles.has(normBase)) continue;
 
+      seenKeys.add(uniqueKey);
       seenBaseTitles.add(normBase);
       selected.push(recommendedBookFromCandidate(book, rating, request));
       if (selected.length >= 3) break;
@@ -361,7 +504,10 @@ const EVALUATION_SYSTEM = `도서 추천의 관련성 검증자다. 제공된 �
 - 제목이나 분야(classNm)로 수준과 대표성이 명확한 경우(예: '한국단편소설 40', '이상 소설 전집', '소나기 : 한국인이 사랑하는 단편소설', '개미', '나무', '파피용') 적극적으로 80~95점의 점수를 부여한다.
 3. specificTitle+exact 모드만 정확한 해당 작품이어야 하며, similar/topic/author 모드는 폭넓게 관련 도서를 인정한다.
 4. 중요: 조건에 맞는 책이 여러 권 있다면, 상위 3권만 평가하지 말고 **조건에 부합하는 모든 후보(최대 15권)를 ratings 배열에 전부 포함하여 평가**해라. (시스템이 이전 추천 도서와 중복되지 않는 새로운 책을 다양하게 선별할 수 있도록 함).
-5. ratings에 candidateId, relevanceScore(75~100점), topicMatch(true/false), difficultyMatch(true/false), evidence(후보 정보 내 문자열), reason(1~2문장 추천 이유)를 작성한다.
+5. 추천 이유(reason) 엄격 원칙:
+- 추천 이유는 오직 제공된 후보의 서지 정보(title, author, description)와 사용자 요청만을 연결하여 1~2문장으로 간결하게 작성한다.
+- 후보 정보에 없는 줄거리, 존재하지 않는 수상 이력, 확인되지 않은 난이도나 세부 사실을 절대로 날조(Hallucination)하지 않는다.
+6. ratings에 candidateId, relevanceScore(75~100점), topicMatch(true/false), difficultyMatch(true/false), evidence(후보 정보 내 문자열), reason(1~2문장 추천 이유)를 작성한다.
 JSON: {"ratings":[{"candidateId":0,"relevanceScore":85,"topicMatch":true,"difficultyMatch":true,"evidence":"원문 인용","reason":"추천 이유"}]}`;
 
 const SEARCH_SYSTEM = `실제 Google Search 도구로 책을 찾고 검증하는 사서다. 반드시 지금 google_search를 호출한다. 사전지식만으로 책을 추천하지 않는다.
@@ -461,9 +607,19 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
 
     const evaluateCandidates = async (candidates: Book[]): Promise<RecommendedBook[]> => {
       if (!candidates.length) return [];
-      const evaluated = await generate({ stage: 'evaluate_library', json: true, system: EVALUATION_SYSTEM,
-        prompt: JSON.stringify({ request, userMessage, candidates: candidates.slice(0, 35).map((b, candidateId) => ({ ...b, candidateId })) }) });
-      return selectLibraryBooks(candidates, parseJson<CandidateAssessment>(evaluated.text), request, excludedTitles);
+      try {
+        const evaluated = await generate({ stage: 'evaluate_library', json: true, system: EVALUATION_SYSTEM,
+          prompt: JSON.stringify({ request, userMessage, candidates: candidates.slice(0, 35).map((b, candidateId) => ({ ...b, candidateId })) }) });
+        let assessment: CandidateAssessment;
+        try {
+          assessment = parseJson<CandidateAssessment>(evaluated.text);
+        } catch {
+          return [];
+        }
+        return selectLibraryBooks(candidates, assessment, request, excludedTitles);
+      } catch {
+        return [];
+      }
     };
 
     // 1. YES24 후보를 먼저 평가한다. YES24 원본 필드(author/cover/sourceUrl)는
