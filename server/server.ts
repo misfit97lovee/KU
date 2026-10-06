@@ -19,6 +19,7 @@ interface CandidateSearchOptions {
   keyword?: string;
   startDt?: string;
   endDt?: string;
+  timeoutMs?: number;
 }
 
 interface GeminiTextPart { text: string }
@@ -129,7 +130,7 @@ function parseLibraryXml(xmlString: string): Book[] {
 /**
  * data4library 도서 검색 API 호출 헬퍼 (키워드 검색 시 srchBooks, 기본 시 itemSrch)
  */
-async function fetchCandidateBooks({ kdc = '', pageSize = 30, pageNo = 1, keyword = '', startDt = '2023-01-01', endDt = '2024-12-31' }: CandidateSearchOptions = {}): Promise<Book[]> {
+async function fetchCandidateBooks({ kdc = '', pageSize = 30, pageNo = 1, keyword = '', startDt = '2023-01-01', endDt = '2024-12-31', timeoutMs = 20000 }: CandidateSearchOptions = {}): Promise<Book[]> {
   if (!DATA4LIBRARY_AUTH_KEY) {
     throw new Error('DATA4LIBRARY_AUTH_KEY 환경변수가 설정되지 않았습니다.');
   }
@@ -143,7 +144,7 @@ async function fetchCandidateBooks({ kdc = '', pageSize = 30, pageNo = 1, keywor
     if (kdc) apiUrl += `&kdc=${encodeURIComponent(kdc)}`;
   }
 
-  const response = await fetch(apiUrl, { signal: AbortSignal.timeout(20000) });
+  const response = await fetch(apiUrl, { signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) throw new Error(`도서관 API HTTP ${response.status}`);
   const xmlText = await response.text();
 
@@ -157,7 +158,7 @@ async function fetchCandidateBooks({ kdc = '', pageSize = 30, pageNo = 1, keywor
 /**
  * YES24 상품 검색 API 호출 헬퍼
  */
-async function fetchYes24Books({ query, pageSize = 20 }: { query: string; pageSize?: number }): Promise<Book[]> {
+async function fetchYes24Books({ query, pageSize = 20, timeoutMs = 10000 }: { query: string; pageSize?: number; timeoutMs?: number }): Promise<Book[]> {
   if (!YES24_API_KEY || !query) return [];
   try {
     const url = new URL('https://apis.yes24.com/v1/goods/itemList');
@@ -173,7 +174,7 @@ async function fetchYes24Books({ query, pageSize = 20 }: { query: string; pageSi
         'X-Api-Key': YES24_API_KEY,
         'Accept': 'application/json'
       },
-      signal: AbortSignal.timeout(10000)
+      signal: AbortSignal.timeout(timeoutMs)
     });
 
     if (!response.ok) return [];
@@ -645,15 +646,15 @@ const recommendBooks = createRecommendationService({
     searchModel: process.env.GEMINI_SEARCH_MODEL || process.env.GEMINI_MODEL || 'gemini-3.6-flash',
     onEvent: recommendationEvent
   }),
-  fetchCandidates: fetchCandidateBooks,
-  fetchYes24: fetchYes24Books,
+  fetchCandidates: options => fetchCandidateBooks({ ...options, timeoutMs: 3000 }),
+  fetchYes24: options => fetchYes24Books({ ...options, timeoutMs: 3000 }),
   enableGoogleGrounding: process.env.ENABLE_GOOGLE_GROUNDING === 'true',
   searchTitle: async (title: string): Promise<Book[]> => {
     if (!DATA4LIBRARY_AUTH_KEY) throw new Error('Library search is not configured');
     // srchBooks is the actual title/keyword search API; itemSrch is a holdings list.
     const url = new URL(`${DATA4LIBRARY_BASE_URL}/srchBooks`);
     url.search = new URLSearchParams({ authKey: DATA4LIBRARY_AUTH_KEY, title, pageNo: '1', pageSize: '30' }).toString();
-    const response = await fetch(url, { signal: AbortSignal.timeout(20000) });
+    const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
     if (!response.ok) throw new Error(`Library title search HTTP ${response.status}`);
     const xml = await response.text();
     if (xml.includes('<error>')) throw new Error('Library title search error');

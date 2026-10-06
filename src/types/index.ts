@@ -95,6 +95,7 @@ export interface RecommendationInput {
 export interface RecommendationResponse {
   success: true;
   books: RecommendedBook[];
+  moreBooks?: RecommendedBook[];
   response: string;
   request: RecommendationRequest | null;
   candidateCount: number;

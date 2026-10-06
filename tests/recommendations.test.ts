@@ -174,7 +174,7 @@ test('실제로 존재하는 referenceBook은 기존 similar clarification 흐�
     clarifyingQuestion: '『날개』와 어떤 점이 비슷한 책을 찾으세요?' };
   const recommend = createRecommendationService({ fetchYes24: async () => [actualReference], fetchCandidates: async () => [], searchTitle: async () => [],
     generate: async () => json(analyzed) });
-  const result = await recommend({ userMessage: '날개 같은 책 추천해줘' });
+  const result = await recommend({ userMessage: '날개와 어떤 점이 비슷한 책을 찾을지 모르겠어' });
   assert.equal(result.clarification?.question, analyzed.clarifyingQuestion);
   assert.deepEqual(result.clarification?.options, ['분위기', '주제']);
 });
@@ -226,7 +226,7 @@ test('similar 추천은 재정렬 후에도 실제 API 후보 메타데이터만
 
 test('similar 모드는 기준 작품 자체를 제외하고 다른 책을 추천', async () => {
   const similar = { topic: '우주와 천문학', difficulty: '보통', grade: '중1', searchMode: 'similar', keywords: ['우주'],
-    referenceBook: '코스모스', referenceAuthor: '칼 세이건', similarityFocus: '전체', needsClarification: false, kdc: '4' };
+    referenceBook: '코스모스', referenceAuthor: '칼 세이건', similarityFocus: null, needsClarification: true, kdc: '4' };
   const books: Book[] = [
     { title: '코스모스', author: '칼 세이건', isbn13: '9781111111111', description: '우주 교양서', sourceType: 'yes24' },
     { title: '또 다른 우주', author: '별 저자', isbn13: '9782222222222', description: '다른 우주 교양서', sourceType: 'yes24' }
@@ -236,7 +236,76 @@ test('similar 모드는 기준 작품 자체를 제외하고 다른 책을 추�
   const recommend = createRecommendationService({ fetchYes24: async () => books, fetchCandidates: async () => [], searchTitle: async () => [],
     generate: async ({ stage }) => stage === 'analyze' ? json(similar) : json({ ratings }) });
   const result = await recommend({ userMessage: '코스모스 같은 책 추천해줘' });
+  assert.equal(result.clarification, undefined);
   assert.deepEqual(result.books.map(book => book.title), ['또 다른 우주']);
+});
+
+test('이상의 날개같은 고전명작 요청은 실제 개별 작품을 우선하고 후보 평가는 한 번에 수행', async () => {
+  const similar = { topic: '한국 근대 문학', difficulty: '높음', grade: '중1', searchMode: 'similar', keywords: ['한국 근대소설'],
+    referenceBook: '날개', referenceAuthor: '이상', similarityFocus: '문체·작품성', needsClarification: false, kdc: '8' };
+  const books: Book[] = [
+    { title: '날개', author: '이상', isbn13: '9780000000400', description: '한국 근대 문학의 대표 작품', sourceType: 'yes24' },
+    { title: '한국대표 단편소설', author: '작가 여러 명', isbn13: '9780000000401', description: '여러 작가의 작품 모음', sourceType: 'yes24' },
+    { title: '메밀꽃 필 무렵', author: '이효석', isbn13: '9780000000402', description: '한국 근대 단편소설', sourceType: 'yes24' },
+    { title: '소설가 구보씨의 일일', author: '박태원', isbn13: '9780000000403', description: '한국 근대 문학 작품', sourceType: 'yes24' },
+    { title: '운수 좋은 날', author: '현진건', isbn13: '9780000000404', description: '한국 근대 단편소설', sourceType: 'yes24' }
+  ];
+  const searchedQueries: string[] = [];
+  const stages: string[] = [];
+  let activeSearches = 0;
+  let maxActiveSearches = 0;
+  const recommend = createRecommendationService({
+    fetchYes24: async ({ query, pageSize }) => {
+      if (pageSize === 10) return [books[0]!];
+      searchedQueries.push(query);
+      activeSearches++;
+      maxActiveSearches = Math.max(maxActiveSearches, activeSearches);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      activeSearches--;
+      return books;
+    },
+    fetchCandidates: async () => [], searchTitle: async () => [],
+    generate: async ({ stage, prompt }) => {
+      stages.push(stage);
+      const assessedBooks = stage === 'analyze' ? [] : JSON.parse(prompt).candidates as Book[];
+      return stage === 'analyze' ? json(similar) : json({ ratings: assessedBooks.map((book, candidateId) => ({
+        candidateId, relevanceScore: 96 - candidateId, topicMatch: true, difficultyMatch: true,
+        evidence: book.description, reason: '한국 근대 문학 작품을 찾는 요청과 관련 있어요.'
+      })) });
+    }
+  });
+  const result = await recommend({ userMessage: '이상의 날개같은 고전명작 책 찾아줘' });
+  assert(maxActiveSearches > 1, 'YES24 검색어 호출은 병렬 처리한다');
+  assert.deepEqual(stages, ['analyze', 'evaluate_library']);
+  assert.deepEqual(result.books.map(book => book.title), ['메밀꽃 필 무렵', '소설가 구보씨의 일일', '운수 좋은 날']);
+  assert(result.books.every(book => book.sourceType === 'yes24'));
+});
+
+test('Gemini 503은 모델 순차 재시도 없이 한 번에 실패', async () => {
+  let calls = 0;
+  const generate = createGeminiRecommendationClient({ apiKey: 'test', fetchImpl: async () => {
+    calls++;
+    return { ok: false, status: 503, json: async () => ({ error: { message: 'busy' } }) } as Response;
+  } });
+  await assert.rejects(generate({ prompt: '추천', system: '평가', stage: 'evaluate_library' }), /busy/);
+  assert.equal(calls, 1);
+});
+
+test('모델 장애에도 실제 API 개별 작품만 서버 점수로 추천하고 기준 작가 연구서는 제외', async () => {
+  const books: Book[] = [
+    { title: '날개', author: '이상', isbn13: '9780000000500', sourceType: 'yes24' },
+    { title: '이상을 쓰다', author: '이상', isbn13: '9780000000501', sourceType: 'yes24' },
+    { title: '한국 문학 선집', author: '여러 작가', isbn13: '9780000000502', sourceType: 'yes24' },
+    { title: '삼대', author: '염상섭', isbn13: '9780000000503', sourceType: 'yes24' },
+    { title: '광장', author: '최인훈', isbn13: '9780000000504', sourceType: 'yes24' }
+  ];
+  let modelCalls = 0;
+  const recommend = createRecommendationService({ generate: async () => { modelCalls++; throw Error('503'); },
+    fetchYes24: async () => books, fetchCandidates: async () => [], searchTitle: async () => [] });
+  const result = await recommend({ userMessage: '이상의 날개같은 고전명작 책 찾아줘' });
+  assert.equal(modelCalls, 1);
+  assert.deepEqual(result.books.map(book => book.title), ['삼대', '광장']);
+  assert.equal(result.books[0]?.isbn13, books[3]?.isbn13);
 });
 
 test('명확한 topic 요청은 질문 없이 바로 검색하고, 질문 답변 뒤에는 재질문하지 않음', async () => {

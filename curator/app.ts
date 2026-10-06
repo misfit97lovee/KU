@@ -51,7 +51,7 @@ interface TaoTurnData {
   observation: string;
   isSafe: boolean;
 }
-type CuratorApiResponse = Omit<RecommendationResponse, 'books'> & { books: CuratorBook[] };
+type CuratorApiResponse = Omit<RecommendationResponse, 'books' | 'moreBooks'> & { books: CuratorBook[]; moreBooks?: CuratorBook[] };
 type SafetyResult = { isSafe: true } | { isSafe: false; reason: string; type: string; fallbackMessage: string };
 interface ToolResult { status: string; message?: string; bookTitle?: string; documentCreated?: boolean; previewSnippet?: string; action?: string }
 
@@ -598,7 +598,7 @@ async function processAgentTurn(userMessage: string): Promise<void> {
         ? 'searchYes24Books'
         : (result.search?.fallbackUsed ? 'searchWebBooks' : 'searchLibraryBooks'),
       actionParams: { count: books.length }, observation: books.length ? '확인된 도서 표시' : '조건에 맞는 도서 미확인', isSafe: true });
-    appendLibrarianMessage(response, books, false, result.searchSuggestionsHtml);
+    appendLibrarianMessage(response, books, false, result.searchSuggestionsHtml, null, result.moreBooks || []);
   } catch {
     const response = '지금은 책 정보를 확인할 수 없어. 잠시 후 다시 찾아볼까?';
     AgentState.chatHistory.push({ role: 'librarian', content: response });
@@ -746,6 +746,15 @@ function formatChatText(text: string): string {
 
 function appendUserMessage(text: string): void {
   const container = requiredElement('chatMessages');
+  const chat = document.querySelector('.recommendation-chat');
+  chat?.classList.add('has-messages');
+  const input = document.getElementById('chatInput') as HTMLTextAreaElement | null;
+  if (input) {
+    input.placeholder = '메시지를 입력하세요';
+    input.setAttribute('aria-label', '메시지 입력');
+  }
+  const sendButton = document.getElementById('sendBtn');
+  if (sendButton) sendButton.textContent = '보내기';
   const timeStr = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 
   const msgDiv = document.createElement('div');
@@ -783,7 +792,7 @@ function readThisBook(title: string, author: string): void {
   window.location.href = targetUrl;
 }
 
-function appendLibrarianMessage(text: string, books: CuratorBook[] | null = null, showNotePrompt = false, searchSuggestionsHtml: string | null = null, clarification: RecommendationClarification | null = null): void {
+function appendLibrarianMessage(text: string, books: CuratorBook[] | null = null, showNotePrompt = false, searchSuggestionsHtml: string | null = null, clarification: RecommendationClarification | null = null, moreBooks: CuratorBook[] = []): void {
   const container = requiredElement('chatMessages');
   const timeStr = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 
@@ -844,6 +853,30 @@ function appendLibrarianMessage(text: string, books: CuratorBook[] | null = null
     `;
   }
 
+  const moreBooksHtml = moreBooks.length ? `
+    <div class="more-books-section">
+      <button type="button" class="more-books-toggle" data-more-books-toggle>
+        책 더 보기 <span>${moreBooks.length}권</span>
+      </button>
+      <div class="more-books-list" data-more-books-list hidden>
+        ${moreBooks.map(book => {
+          const author = book.author || book.authors || '저자 미상';
+          const sourceUrl = safeBookSourceUrl(book.sourceUrl);
+          return `<article class="more-book-item">
+            <div class="more-book-info">
+              <strong>${escapeHtml(book.title)}</strong>
+              <span>${escapeHtml(author)}${book.publisher ? ` · ${escapeHtml(book.publisher)}` : ''}</span>
+            </div>
+            <div class="more-book-actions">
+              ${sourceUrl ? `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">상세 보기</a>` : ''}
+              <button type="button" class="more-book-read" data-book-title="${escapeHtml(book.title)}" data-book-author="${escapeHtml(author)}">읽기</button>
+            </div>
+          </article>`;
+        }).join('')}
+      </div>
+    </div>
+  ` : '';
+
   let noteQuickAction = "";
   if (showNotePrompt && AgentState.currentDocument) {
     noteQuickAction = `
@@ -868,6 +901,7 @@ function appendLibrarianMessage(text: string, books: CuratorBook[] | null = null
       <div class="msg-bubble">${formatChatText(text)}</div>
       ${clarificationHtml}
       ${bookCardsHtml}
+      ${moreBooksHtml}
       ${noteQuickAction}
       <div class="msg-time">
         <span>${timeStr}</span>
@@ -885,6 +919,18 @@ function appendLibrarianMessage(text: string, books: CuratorBook[] | null = null
     msgDiv.appendChild(suggestions);
   }
   container.appendChild(msgDiv);
+  const moreToggle = msgDiv.querySelector<HTMLButtonElement>('[data-more-books-toggle]');
+  moreToggle?.addEventListener('click', () => {
+    const list = msgDiv.querySelector<HTMLElement>('[data-more-books-list]');
+    if (!list) return;
+    const opening = list.hidden !== false;
+    list.hidden = !opening;
+    moreToggle.classList.toggle('is-open', opening);
+    moreToggle.innerHTML = opening ? `책 더 보기 <span>접기</span>` : `책 더 보기 <span>${moreBooks.length}권</span>`;
+  });
+  msgDiv.querySelectorAll<HTMLButtonElement>('.more-book-read').forEach(button => {
+    button.addEventListener('click', () => readThisBook(button.dataset.bookTitle || '', button.dataset.bookAuthor || ''));
+  });
   msgDiv.querySelectorAll('.clarification-option').forEach(button => {
     button.addEventListener('click', () => {
       const input = document.getElementById('chatInput') as HTMLTextAreaElement | null;

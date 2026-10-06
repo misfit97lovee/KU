@@ -72,6 +72,7 @@ interface GenerateOptions {
   search?: boolean;
   json?: boolean;
   stage: string;
+  timeoutMs?: number;
 }
 
 type GenerateFunction = (options: GenerateOptions) => Promise<GeminiGenerationResult>;
@@ -183,6 +184,59 @@ export function isCollectionLike(book: Book): boolean {
   if (/(?:대표작|엄선|모음).{0,10}단편소설|단편소설.{0,10}(?:\d+편?|\d+권|선|모음|컬렉션)/u.test(titleAndCategory)) return true;
   if (/(?:여러|다양한)\s*(?:작가|\S*\s*작품)|\d+편의\s*(?:단편|작품)|수록\s*작품/u.test(metadata)) return true;
   return authors.split(/[,;/·ㆍ・]/u).filter(part => part.trim()).length >= 3;
+}
+
+// Retrieval hints only: every returned edition must still come from a book API.
+const KOREAN_WORK_SEARCH_HINTS = [
+  { title: '광장', author: '최인훈' },
+  { title: '삼대', author: '염상섭' },
+  { title: '무정', author: '이광수' },
+  { title: '메밀꽃 필 무렵', author: '이효석' },
+  { title: '소설가 구보씨의 일일', author: '박태원' },
+  { title: '운수 좋은 날', author: '현진건' }
+];
+
+function knownKoreanWork(book: Book): boolean {
+  return KOREAN_WORK_SEARCH_HINTS.some(work => normalize(getBaseTitle(book.title)) === normalize(work.title)
+    && hasText(book.author || book.authors, work.author));
+}
+
+function isIndividualLiteraryWork(book: Book): boolean {
+  const identity = [book.title, book.category, book.classNm].filter(Boolean).join(' ');
+  if (isCollectionLike(book) || /이상을\s*쓰다|연구|비평|평전|작가론|문학의|해설|논술|문제집|만화|어린이|초등/u.test(identity)) return false;
+  return knownKoreanWork(book) || /한국\s*(?:근대\s*|현대\s*)?소설|한국\s*(?:장편|단편)\s*소설/u.test(identity);
+}
+
+function localRequest(userMessage: string, grade: string): RecommendationRequest | null {
+  if (!/(같은|처럼|비슷)/u.test(userMessage)) return null;
+  const literary = /날개/u.test(userMessage);
+  const space = /코스모스/u.test(userMessage);
+  if (!literary && !space) return null;
+  return { topic: literary ? '한국 근대 소설' : '우주/천문학', difficulty: '미지정', grade,
+    intent: '도서 추천', keywords: literary ? ['한국 소설', '한국 문학'] : ['우주', '천문학'],
+    specificTitle: null, searchMode: 'similar', author: null,
+    referenceBook: literary ? '날개' : '코스모스', referenceAuthor: literary ? '이상' : '칼 세이건',
+    similarityFocus: literary ? '문체·작품성' : '전반적인 주제와 분위기', needsClarification: false,
+    kdc: literary ? '8' : '4' };
+}
+
+function serverCandidateRating(book: Book, candidateId: number, request: RecommendationRequest, individualLiterature: boolean): CandidateRating {
+  const metadata = normalize([book.title, book.author, book.authors, book.category, book.classNm, book.description].filter(Boolean).join(' '));
+  const terms = [...new Set([...request.keywords, ...request.topic.split(/[\s/·]+/u)].map(normalize).filter(term => term.length >= 2))];
+  const matches = terms.filter(term => metadata.includes(term)).length;
+  const category = [book.category, book.classNm].filter(Boolean).join(' ');
+  const domainBonus = request.kdc === '4' && /자연과학|천문|우주/u.test(category) ? 8 : 0;
+  const domainPenalty = request.kdc === '4' && /예술|미술|소설|시\/희곡/u.test(category) ? 25 : 0;
+  const titleBonus = terms.some(term => normalize(book.title).includes(term)) ? 8 : 0;
+  const childrenPenalty = request.kdc === '4' && /어린이|초등/u.test(category) ? 5 : 0;
+  const score = request.searchMode === 'exact' && matchesRequestedTitle(book.title, request) ? 95
+    : request.searchMode === 'author' && request.author && hasText(book.author || book.authors, request.author) ? 90
+    : individualLiterature && knownKoreanWork(book) ? 92
+    : Math.min(95, 65 + matches * 12 + titleBonus + domainBonus - domainPenalty - childrenPenalty);
+  const difficultyMatch = request.difficulty !== '높음' || individualLiterature
+    || /심화|고급|대학|전문|깊이/u.test([book.title, book.description, book.classNm].join(' '));
+  return { candidateId, relevanceScore: score, topicMatch: score >= RELEVANCE_THRESHOLD, difficultyMatch,
+    evidence: book.title, reason: `실제 도서 검색에서 확인한 제목과 저자, 분야를 기준으로 요청에 맞춰 골랐어요.` };
 }
 
 export function findMatchingCandidate(rating: unknown, candidates: Book[]): { book: Book; candidateId: number } | null {
@@ -435,16 +489,9 @@ export function parseBookSearchXml(xml: string): Data4LibraryBook[] {
 }
 
 export function createGeminiRecommendationClient({ apiKey, model = 'gemini-3.6-flash', searchModel = 'gemini-3.6-flash', fetchImpl = fetch, onEvent = () => {} }: GeminiClientOptions): GenerateFunction {
-  return async function generate({ prompt, system, search = false, json = false, stage }: GenerateOptions): Promise<GeminiGenerationResult> {
+  return async function generate({ prompt, system, search = false, json = false, stage, timeoutMs = 5000 }: GenerateOptions): Promise<GeminiGenerationResult> {
     if (!apiKey) throw new Error('Recommendation model is not configured');
-    const models = [...new Set([
-      search ? searchModel : model,
-      'gemini-3.6-flash',
-      'gemini-flash-latest',
-      'gemini-3.5-flash',
-      'gemini-3.7-flash',
-      'gemini-3.1-flash-lite'
-    ])];
+    const models = [search ? searchModel : model];
     let lastError: Error | undefined;
     for (const candidateModel of models) {
       const payload = {
@@ -459,17 +506,13 @@ export function createGeminiRecommendationClient({ apiKey, model = 'gemini-3.6-f
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
           body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(60000)
+          signal: AbortSignal.timeout(Math.max(1, Math.min(timeoutMs, 5000)))
         });
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({})) as GeminiResponse;
           const errMsg = errorData.error?.message || `Recommendation model HTTP ${response.status}`;
           lastError = new Error(errMsg.split(apiKey).join('[redacted]'));
           onEvent({ stage, event: 'error', model: candidateModel, status: response.status, code: errorData.error?.status, message: lastError.message.slice(0, 350) });
-          if ([404, 429, 500, 502, 503, 504].includes(response.status)) {
-            await new Promise(r => setTimeout(r, 600));
-            continue;
-          }
           throw lastError;
         }
         const data = await response.json() as GeminiResponse;
@@ -498,8 +541,9 @@ const ANALYSIS_SYSTEM = `사용자의 도서 요청을 구조화하는 분석기
 아래 JSON만 출력한다:
 {"topic":"구체적 주제 또는 미지정", "difficulty":"쉬움|보통|높음|미지정", "grade":"중1|중2|중3", "intent":"도서 추천", "keywords":["핵심 검색어"], "specificTitle":null, "searchMode":"topic|exact|similar|author|broad", "author":null, "referenceBook":null, "referenceAuthor":null, "similarityFocus":null, "needsClarification":false, "clarifyingQuestion":null, "clarificationOptions":[], "kdc":"4"}
 특정 제목을 찾아줘/있어? 는 exact로 제목을 원문 그대로 specificTitle에 보존한다. 가짜/모르는 제목도 수정하거나 실존 제목으로 바꾸지 않는다.
-'코스모스 같은 책'은 similar이며 referenceBook은 코스모스, topic은 우주/천문학이다. specificTitle은 null이다.
+'코스모스 같은 책'은 similar이며 referenceBook은 코스모스, topic은 우주/천문학이다. 유사 기준을 따로 묻지 말고 전반적인 주제와 분위기로 바로 추천한다. specificTitle은 null이다.
 '이상의 날개처럼 깊고 수준 높은 고전 명작'은 similar, referenceBook은 날개, referenceAuthor는 이상, similarityFocus는 문체·작품성/난이도다. 날개 자체를 찾는 exact로 분류하면 안 된다.
+'이상의 날개같은 고전명작 책 찾아줘'도 같은 similar 요청이다. referenceBook은 날개, referenceAuthor는 이상, topic은 한국 근대 문학, specificTitle은 null이다.
 '파인만 물리학 책'처럼 저자의 분야별 저서를 찾으면 author 모드, author는 파인만, specificTitle은 null이다.
 '이상 작품 추천', '김영하 책 추천'은 author 모드다.
 '재밌는 책 추천', '좋은 책 알려줘'처럼 결과가 크게 달라질 만큼 조건이 넓으면 broad이고 needsClarification=true다. 질문은 '어떤 분야의 책을 읽고 싶으세요?', 선택지는 ['소설','과학','역사','사회']다.
@@ -552,7 +596,27 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
   return async function recommend({ userMessage, userGrade = '중1', userInterests = [], chatHistory = [], recommendedBooks = [] }: RecommendationInput): Promise<RecommendationResponse> {
     const trace: RecommendationTrace = { libraryAttempted: false, libraryCandidateCount: 0, libraryEligibleCount: 0, fallbackUsed: false,
       googleSearchRequested: false, googleSearchExecuted: false, searchQueries: [], groundedPassageCount: 0, failures: [] };
+    let geminiRemainingMs = 5000;
+    let geminiUnavailable = false;
+    const generateWithinBudget: GenerateFunction = async options => {
+      if (geminiUnavailable || geminiRemainingMs <= 0) throw new Error('Recommendation model budget exhausted');
+      const started = Date.now();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          generate({ ...options, timeoutMs: geminiRemainingMs }),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Recommendation model timeout')), geminiRemainingMs); })
+        ]);
+      } catch (error) {
+        geminiUnavailable = true;
+        throw error;
+      } finally {
+        if (timer) clearTimeout(timer);
+        geminiRemainingMs -= Date.now() - started;
+      }
+    };
     let request: RecommendationRequest | null = null;
+    let moreBooks: RecommendedBook[] = [];
     const recentClarification = chatHistory.at(-2)?.isClarification === true ? chatHistory.at(-2) : null;
     const clarificationAlreadyAsked = Boolean(recentClarification);
 
@@ -571,13 +635,21 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
 
     const result = (books: RecommendedBook[]): RecommendationResponse => ({ success: true, books,
       response: books.length ? (books[0]?.sourceType === 'web' ? '도서관 소장 목록에서는 딱 맞는 책을 찾지 못해서, 범위를 넓혀 찾아봤어요.' : books.length === 1 ? '이 책이 가장 잘 맞아요.' : `조건에 잘 맞는 책 ${books.length}권을 골랐어요.`) : NO_MATCH_MESSAGE,
-      request, candidateCount: trace.libraryCandidateCount, kdc: request?.kdc || null, search: trace });
+      moreBooks, request, candidateCount: trace.libraryCandidateCount, kdc: request?.kdc || null, search: trace });
     try {
-      const analysis = await generate({ stage: 'analyze', json: true, system: ANALYSIS_SYSTEM,
-        prompt: JSON.stringify({ userMessage, userGrade, userInterests, previousMessages: chatHistory.slice(-6),
-          clarificationAlreadyAsked, originalRequest: recentClarification?.originalRequest || null,
-          instruction: clarificationAlreadyAsked ? '추가 질문은 이미 한 번 했다. 현재 답과 원래 요청을 합쳐 바로 검색 가능한 intent로 구조화하고 다시 질문하지 않는다.' : null }) });
-      const parsed = parseJson<AnalysisOutput>(analysis.text);
+      let parsed: AnalysisOutput;
+      try {
+        const analysis = await generateWithinBudget({ stage: 'analyze', json: true, system: ANALYSIS_SYSTEM,
+          prompt: JSON.stringify({ userMessage, userGrade, userInterests, previousMessages: chatHistory.slice(-6),
+            clarificationAlreadyAsked, originalRequest: recentClarification?.originalRequest || null,
+            instruction: clarificationAlreadyAsked ? '추가 질문은 이미 한 번 했다. 현재 답과 원래 요청을 합쳐 바로 검색 가능한 intent로 구조화하고 다시 질문하지 않는다.' : null }) });
+        parsed = parseJson<AnalysisOutput>(analysis.text);
+      } catch (error) {
+        const fallbackRequest = localRequest(userMessage, userGrade);
+        if (!fallbackRequest) throw error;
+        parsed = fallbackRequest;
+        trace.failures.push('model_analysis_unavailable');
+      }
       const topic = textValue(parsed.topic);
       const parsedMode = textValue(parsed.searchMode);
       if (!topic || !parsedMode || !['topic', 'exact', 'similar', 'author', 'broad'].includes(parsedMode)) throw new Error('Invalid request analysis');
@@ -591,6 +663,11 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
         referenceAuthor: textValue(parsed.referenceAuthor), similarityFocus: textValue(parsed.similarityFocus),
         needsClarification: !clarificationAlreadyAsked && parsed.needsClarification === true,
         kdc: typeof parsed.kdc === 'string' && /^[0-9]$/.test(parsed.kdc) ? parsed.kdc : '8' };
+
+      if (request.searchMode === 'similar' && /(?:같은\s*책|처럼\s*(?:비슷한\s*)?책)/u.test(userMessage)) {
+        request.needsClarification = false;
+        request.similarityFocus ||= '전반적인 주제와 분위기';
+      }
 
       // similar 기준 도서는 추가 질문을 보내기 전에 실제 API 결과에서 먼저 확인한다.
       if (request.searchMode === 'similar' && request.referenceBook) {
@@ -638,6 +715,7 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
     }
 
     if (!request) return result([]);
+    const individualLiterature = request.searchMode === 'similar' && request.kdc === '8' && /고전|명작/u.test(userMessage);
 
     const addCandidates = (target: Book[], seen: Set<string>, list: Book[]): void => {
       for (const b of list || []) {
@@ -652,19 +730,48 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
 
     const evaluateCandidates = async (candidates: Book[]): Promise<RecommendedBook[]> => {
       if (!candidates.length) return [];
+      const rankedCandidates = candidates.filter(book => !individualLiterature || isIndividualLiteraryWork(book))
+        .sort((a, b) => serverCandidateRating(b, 0, request, individualLiterature).relevanceScore
+          - serverCandidateRating(a, 0, request, individualLiterature).relevanceScore).slice(0, 12);
+      if (!rankedCandidates.length) return [];
+      const fallback = (): RecommendedBook[] => {
+        trace.failures.push('model_evaluation_unavailable');
+        return selectLibraryBooks(rankedCandidates, { ratings: rankedCandidates.map((book, candidateId) =>
+          serverCandidateRating(book, candidateId, request, individualLiterature)) }, request, excludedTitles);
+      };
       try {
-        const evaluated = await generate({ stage: 'evaluate_library', json: true, system: EVALUATION_SYSTEM,
-          prompt: JSON.stringify({ request, userMessage, candidates: candidates.slice(0, 35).map((b, candidateId) => ({ ...b, candidateId })) }) });
+        const evaluated = await generateWithinBudget({ stage: 'evaluate_library', json: true, system: EVALUATION_SYSTEM,
+          prompt: JSON.stringify({ request, userMessage, candidates: rankedCandidates.map((b, candidateId) => ({
+            candidateId, title: b.title, author: b.author || b.authors, category: b.category || b.classNm,
+            isbn13: b.isbn13, description: b.description?.slice(0, 600)
+          })) }) });
         let assessment: CandidateAssessment;
         try {
           assessment = parseJson<CandidateAssessment>(evaluated.text);
         } catch {
-          return [];
+          return fallback();
         }
-        return selectLibraryBooks(candidates, assessment, request, excludedTitles);
+        return selectLibraryBooks(rankedCandidates, assessment, request, excludedTitles);
       } catch {
-        return [];
+        return fallback();
       }
+    };
+
+    const setMoreBooks = (candidates: Book[], selected: RecommendedBook[]): void => {
+      const selectedKeys = new Set(selected.map(book => book.isbn13 || normalize(getBaseTitle(book.title))));
+      const seen = new Set<string>();
+      moreBooks = candidates
+        .filter(book => !individualLiterature || isIndividualLiteraryWork(book))
+        .filter(book => !request!.referenceBook || !isReferenceBook(book, request!.referenceBook, request!.referenceAuthor))
+        .map((book, candidateId) => ({ book, rating: serverCandidateRating(book, candidateId, request!, individualLiterature) }))
+        .filter(({ book, rating }) => rating.topicMatch && rating.difficultyMatch)
+        .sort((a, b) => b.rating.relevanceScore - a.rating.relevanceScore)
+        .flatMap(({ book, rating }) => {
+          const key = book.isbn13 || normalize(getBaseTitle(book.title));
+          if (!key || selectedKeys.has(key) || seen.has(key)) return [];
+          seen.add(key);
+          return [recommendedBookFromCandidate(book, rating, request!)];
+        }).slice(0, 30);
     };
 
     // 1. YES24 후보를 먼저 평가한다. YES24 원본 필드(author/cover/sourceUrl)는
@@ -677,14 +784,16 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
         request.searchMode === 'author' && request.author ? `${request.author} 소설` : null,
         request.searchMode === 'author' && request.author ? `${request.author} 대표작` : null,
         request.searchMode === 'author' && request.author ? request.author : null,
-        request.searchMode === 'similar' ? '한국 대표 단편소설' : null,
-        request.searchMode === 'similar' && request.referenceBook ? `${request.referenceAuthor || ''} ${request.referenceBook} ${request.topic}`.trim() : null,
+        ...(individualLiterature ? KOREAN_WORK_SEARCH_HINTS.slice(0, 3).map(work => `${work.author} ${work.title}`) : []),
+        request.searchMode === 'similar' && !individualLiterature && request.referenceBook ? `${request.referenceAuthor || ''} ${request.referenceBook} ${request.topic}`.trim() : null,
+        request.searchMode === 'similar' && request.kdc === '8' ? `${request.topic} 단편소설 개별 작품` : null,
         request.keywords?.[0] ? `${request.keywords[0]} ${request.topic}`.trim() : null,
         request.topic
       ].filter((query): query is string => Boolean(query)))];
 
-      for (const query of yes24Queries.slice(0, 4)) {
-        const books = await fetchYes24({ query, pageSize: 15 }).catch(() => []);
+      const yes24Results = await Promise.all(yes24Queries.slice(0, 4).map(query =>
+        fetchYes24({ query, pageSize: 15 }).catch(() => [])));
+      for (const books of yes24Results) {
         addCandidates(yes24Candidates, yes24Seen, books);
       }
 
@@ -694,7 +803,10 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
       try {
         const books = await evaluateCandidates(matchingYes24);
         trace.libraryEligibleCount += books.length;
-        if (books.length) return result(books);
+        if (books.length) {
+          setMoreBooks(matchingYes24, books);
+          return result(books);
+        }
       } catch {
         trace.failures.push('yes24_evaluation_failed');
       }
@@ -711,18 +823,19 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
       } else {
         const searchTerms = [...new Set([
           request.searchMode === 'author' && request.author ? request.author : null,
-          request.searchMode === 'similar' ? '한국단편소설' : null,
-          request.searchMode === 'similar' && request.referenceBook ? `${request.referenceAuthor || ''} ${request.referenceBook}`.trim() : null,
+          ...(individualLiterature ? KOREAN_WORK_SEARCH_HINTS.slice(0, 3).map(work => work.title) : []),
+          request.searchMode === 'similar' && !individualLiterature && request.kdc === '8' ? '한국단편소설' : null,
+          request.searchMode === 'similar' && !individualLiterature && request.referenceBook ? `${request.referenceAuthor || ''} ${request.referenceBook}`.trim() : null,
           request.specificTitle ? `${request.author || ''} ${request.specificTitle}`.trim() : null,
           request.keywords?.[0],
           request.keywords?.[1],
           request.topic !== '과학' ? request.topic : null
         ].filter((term): term is string => Boolean(term)))];
 
-        for (const term of searchTerms.slice(0, 3)) {
-          const list = await fetchCandidates({ kdc: request.kdc, keyword: term, pageSize: 25 }).catch(() => []);
+        const searchResults = await Promise.all(searchTerms.slice(0, 3).map(term =>
+          fetchCandidates({ kdc: request!.kdc, keyword: term, pageSize: 25 }).catch(() => [])));
+        for (const list of searchResults) {
           addCandidates(candidates, seenCandidateKeys, list);
-          if (candidates.length >= 35) break;
         }
         if (!candidates.length) {
           const defaultList = await fetchCandidates({ kdc: request.kdc, pageSize: 25 }).catch(() => []);
@@ -739,7 +852,10 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
     try {
       const books = await evaluateCandidates(candidates);
       trace.libraryEligibleCount += books.length;
-      if (books.length) return result(books);
+      if (books.length) {
+        setMoreBooks(candidates, books);
+        return result(books);
+      }
     } catch {
       trace.failures.push('library_evaluation_failed');
     }
@@ -750,14 +866,14 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
     trace.fallbackUsed = true;
     trace.googleSearchRequested = true;
     try {
-      const searched = await generate({ stage: 'google_search', search: true, system: SEARCH_SYSTEM,
+      const searched = await generateWithinBudget({ stage: 'google_search', search: true, system: SEARCH_SYSTEM,
         prompt: JSON.stringify({ request, userMessage, instruction: '도서관에 적합한 책이 없었다. Google Search로 실제 해당 책을 확인해라.' }) });
       trace.searchQueries = searched.groundingMetadata?.webSearchQueries || [];
       trace.googleSearchExecuted = trace.searchQueries.some(q => textValue(q));
       const evidence = getGroundedEvidence(searched);
       trace.groundedPassageCount = evidence.length;
       if (!evidence.length) { trace.failures.push('no_grounded_evidence'); return result([]); }
-      const extracted = await generate({ stage: 'extract_grounded_books', json: true, system: EXTRACTION_SYSTEM,
+      const extracted = await generateWithinBudget({ stage: 'extract_grounded_books', json: true, system: EXTRACTION_SYSTEM,
         prompt: JSON.stringify({ request, userMessage, evidence }) });
       const books = selectWebBooks(parseJson<{ books?: WebBookRecord[] }>(extracted.text), evidence, request);
       const response = result(books);
