@@ -841,6 +841,7 @@ function appendLibrarianMessage(text: string, books: CuratorBook[] | null = null
                   </div>
                 ` : ''}
                 <div class="book-actions">
+                  ${moreBooks.length ? '<button type="button" class="more-books-toggle" data-more-books-toggle aria-expanded="false">책 추천 더 받기</button>' : ''}
                   <button class="book-btn primary" onclick="readThisBook('${escapeHtml(escapeJsString(book.title))}', '${escapeHtml(escapeJsString(authorText))}')">
                      이 책 읽기
                   </button>
@@ -854,11 +855,9 @@ function appendLibrarianMessage(text: string, books: CuratorBook[] | null = null
   }
 
   const moreBooksHtml = moreBooks.length ? `
-    <div class="more-books-section">
-      <button type="button" class="more-books-toggle" data-more-books-toggle>
-        책 더 보기 <span>${moreBooks.length}권</span>
-      </button>
-      <div class="more-books-list" data-more-books-list hidden>
+    <div class="more-books-section" data-more-books-list hidden>
+      <p class="more-books-heading">추천에 선택되지 않은 검색 후보 ${moreBooks.length}권</p>
+      <div class="more-books-list">
         ${moreBooks.map(book => {
           const author = book.author || book.authors || '저자 미상';
           const sourceUrl = safeBookSourceUrl(book.sourceUrl);
@@ -919,15 +918,15 @@ function appendLibrarianMessage(text: string, books: CuratorBook[] | null = null
     msgDiv.appendChild(suggestions);
   }
   container.appendChild(msgDiv);
-  const moreToggle = msgDiv.querySelector<HTMLButtonElement>('[data-more-books-toggle]');
-  moreToggle?.addEventListener('click', () => {
+  const moreToggles = msgDiv.querySelectorAll<HTMLButtonElement>('[data-more-books-toggle]');
+  moreToggles.forEach(button => button.addEventListener('click', () => {
     const list = msgDiv.querySelector<HTMLElement>('[data-more-books-list]');
     if (!list) return;
     const opening = list.hidden !== false;
     list.hidden = !opening;
-    moreToggle.classList.toggle('is-open', opening);
-    moreToggle.innerHTML = opening ? `책 더 보기 <span>접기</span>` : `책 더 보기 <span>${moreBooks.length}권</span>`;
-  });
+    moreToggles.forEach(toggle => toggle.setAttribute('aria-expanded', String(opening)));
+    if (opening) list.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }));
   msgDiv.querySelectorAll<HTMLButtonElement>('.more-book-read').forEach(button => {
     button.addEventListener('click', () => readThisBook(button.dataset.bookTitle || '', button.dataset.bookAuthor || ''));
   });

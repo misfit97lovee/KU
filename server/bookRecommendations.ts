@@ -761,10 +761,8 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
       const selectedKeys = new Set(selected.map(book => book.isbn13 || normalize(getBaseTitle(book.title))));
       const seen = new Set<string>();
       moreBooks = candidates
-        .filter(book => !individualLiterature || isIndividualLiteraryWork(book))
         .filter(book => !request!.referenceBook || !isReferenceBook(book, request!.referenceBook, request!.referenceAuthor))
         .map((book, candidateId) => ({ book, rating: serverCandidateRating(book, candidateId, request!, individualLiterature) }))
-        .filter(({ book, rating }) => rating.topicMatch && rating.difficultyMatch)
         .sort((a, b) => b.rating.relevanceScore - a.rating.relevanceScore)
         .flatMap(({ book, rating }) => {
           const key = book.isbn13 || normalize(getBaseTitle(book.title));

@@ -42,12 +42,13 @@
 .book-reason { margin-top: 2px; padding: 12px 0 0 14px; border-top: 0; border-left: 2px solid var(--primary); font-size: 13px; color: var(--text-secondary); line-height: 1.75; }
 .book-reason::before { content: '이 책을 추천하는 이유'; display: block; margin-bottom: 5px; color: var(--primary); font-weight: 600; }
 .reason-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.book-actions { display: flex; justify-content: flex-end; margin-top: auto; padding-top: 8px; }
+.book-actions { display: flex; align-items: center; justify-content: flex-end; gap: 16px; flex-wrap: wrap; margin-top: auto; padding-top: 8px; }
 .book-btn { width: auto; min-width: 124px; }
 .more-books-section { margin-top: 12px; width: min(100%, 880px); }
-.more-books-toggle { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: #fff; color: var(--text-secondary); font-size: 12px; font-weight: 600; }
-.more-books-toggle:hover { border-color: var(--primary-border); color: var(--primary); background: var(--primary-light); }
-.more-books-toggle span { color: var(--text-muted); font-weight: 500; }
+.more-books-toggle { padding: 6px 0; border: 0; background: transparent; color: var(--text-secondary); font-size: 12px; font-weight: 500; cursor: pointer; }
+.more-books-toggle:hover { text-decoration: underline; }
+.more-books-toggle:focus-visible { outline: 2px solid currentColor; outline-offset: 4px; }
+.more-books-heading { margin: 0; color: var(--text-secondary); font-size: 13px; }
 .more-books-list { display: grid; gap: 7px; margin-top: 9px; padding: 10px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: #fff; }
 .more-book-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 4px; border-bottom: 1px solid #edf0f4; }
 .more-book-item:last-child { border-bottom: 0; }

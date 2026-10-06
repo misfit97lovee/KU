@@ -306,6 +306,20 @@ test('모델 장애에도 실제 API 개별 작품만 서버 점수로 추천하
   assert.equal(modelCalls, 1);
   assert.deepEqual(result.books.map(book => book.title), ['삼대', '광장']);
   assert.equal(result.books[0]?.isbn13, books[3]?.isbn13);
+  assert.deepEqual(new Set(result.moreBooks?.map(book => book.title)), new Set(['이상을 쓰다', '한국 문학 선집']));
+});
+
+test('추가 후보는 실제 검색 결과에서 선택된 책을 제외하고 최대 30권 반환', async () => {
+  const books: Book[] = Array.from({ length: 40 }, (_, i) => ({
+    title: `심화 물리학 ${String.fromCharCode(0xac00 + i)}`, author: `저자 ${i}`, isbn13: `978000000${String(i).padStart(4, '0')}`, sourceType: 'yes24', description: '심화 물리학'
+  }));
+  const recommend = createRecommendationService({ fetchYes24: async () => books, fetchCandidates: async () => [], searchTitle: async () => [],
+    generate: async ({ stage }) => stage === 'analyze' ? json(request) : json({ ratings: [goodRating] }) });
+  const result = await recommend({ userMessage: '심화 물리학 책 추천해줘' });
+  assert.equal(result.books.length, 1);
+  assert.equal(result.moreBooks?.length, 30);
+  assert.equal(new Set(result.moreBooks?.map(book => book.isbn13)).size, 30);
+  assert(result.moreBooks?.every(book => books.some(candidate => candidate.isbn13 === book.isbn13) && book.isbn13 !== result.books[0]?.isbn13));
 });
 
 test('명확한 topic 요청은 질문 없이 바로 검색하고, 질문 답변 뒤에는 재질문하지 않음', async () => {
