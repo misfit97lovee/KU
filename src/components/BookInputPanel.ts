@@ -1,5 +1,6 @@
 import type { MessageImage } from '../types/index.ts';
 import { openCameraModal } from './CameraModal.ts';
+import { getAccountRevision } from '../accountStorage.ts';
 
 interface BookInputOptions {
   bookTitle?: string;
@@ -8,12 +9,14 @@ interface BookInputOptions {
 }
 
 export function renderBookInputPanel(container: HTMLElement, { bookTitle = '', onSendToChat, onSendImage }: BookInputOptions): void {
+  const revision = getAccountRevision();
   let activeTab: 'image' | 'direct' = 'image'; // 우선순위 1이므로 기본 탭을 '책 사진 올리기'로 설정
   let selectedFile: File | null = null;
   let previewUrl: string | null = null;
   let activeCameraCleanup: (() => void) | null = null;
 
   function update() {
+    if (revision !== getAccountRevision()) return;
     container.innerHTML = `
       <div class="panel-header">
         <div class="panel-title">
@@ -154,6 +157,7 @@ export function renderBookInputPanel(container: HTMLElement, { bookTitle = '', o
 
         // Base64 변환
         const base64Data = await fileToBase64(file);
+        if (revision !== getAccountRevision()) return;
         const mimeType = file.type || 'image/jpeg';
 
         onSendImage({
@@ -174,6 +178,7 @@ export function renderBookInputPanel(container: HTMLElement, { bookTitle = '', o
   }
 
   function handleFileSelect(file?: File): void {
+    if (revision !== getAccountRevision()) return;
     if (!file) return;
     const validTypes = ['image/jpeg', 'image/jpg', 'image/png'];
     if (!validTypes.includes(file.type)) {

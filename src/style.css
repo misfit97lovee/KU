@@ -99,6 +99,9 @@
   .panel-record { grid-column: 1 / -1; }
   .panel-record .panel-body { max-width: 720px; }
 }
+@media (max-width: 1500px) {
+  .reading-heading { position: static; display: flex; justify-content: flex-end; padding: 12px 32px 0; }
+}
 @media (max-width: 768px) {
   .reading-heading { padding: 20px 16px; flex-direction: column; align-items: stretch; gap: 16px; }
   .current-book { flex-wrap: wrap; gap: 6px; }

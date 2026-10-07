@@ -1,5 +1,7 @@
 import { serviceHeader, bindHistoryButton } from '../src/components/Header.ts';
+import { mountAuth } from '../src/auth.ts';
 import { saveSessionSnapshot } from '../src/sessionHistory.ts';
+import { accountGet, accountSet, accountFetch, getAccountRevision, subscribeAccount } from '../src/accountStorage.ts';
 import type { BookSourceType, RecommendationClarification, RecommendationResponse } from '../src/types/index.ts';
 
 interface CuratorBook {
@@ -414,6 +416,7 @@ ${book.questions.map((q, idx) => `### Q${idx + 1}. ${q}\n*(나의 생각)*: `).j
       markdown: markdown,
       createdAt: dateStr
     };
+    persistCurator();
 
     renderHud();
 
@@ -501,7 +504,7 @@ async function callRecommendBooksApi(userMessage: string): Promise<CuratorApiRes
     chatHistory: AgentState.chatHistory
   };
 
-  const response = await fetch(url, {
+  const response = await accountFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
@@ -517,6 +520,7 @@ async function callRecommendBooksApi(userMessage: string): Promise<CuratorApiRes
 let isRecommendationLoading = false;
 async function runAgentTurn(userMessage: string): Promise<void> {
   if (isRecommendationLoading) return;
+  const revision = getAccountRevision();
   isRecommendationLoading = true;
   const reset = document.querySelector<HTMLButtonElement>('[data-reset-recommendation]');
   const send = document.getElementById('sendBtn') as HTMLButtonElement | null;
@@ -524,6 +528,7 @@ async function runAgentTurn(userMessage: string): Promise<void> {
   if (send) send.disabled = true;
   try { await processAgentTurn(userMessage); }
   finally {
+    if (revision === getAccountRevision()) persistCurator();
     isRecommendationLoading = false;
     if (reset) reset.disabled = false;
     if (send) send.disabled = false;
@@ -531,6 +536,7 @@ async function runAgentTurn(userMessage: string): Promise<void> {
 }
 
 async function processAgentTurn(userMessage: string): Promise<void> {
+  const revision = getAccountRevision();
   AgentState.turnCount++;
   const currentTurn = AgentState.turnCount;
 
@@ -600,6 +606,7 @@ async function processAgentTurn(userMessage: string): Promise<void> {
       actionParams: { count: books.length }, observation: books.length ? '확인된 도서 표시' : '조건에 맞는 도서 미확인', isSafe: true });
     appendLibrarianMessage(response, books, false, result.searchSuggestionsHtml, null, result.moreBooks || []);
   } catch {
+    if (revision !== getAccountRevision()) return;
     const response = '지금은 책 정보를 확인할 수 없어. 잠시 후 다시 찾아볼까?';
     AgentState.chatHistory.push({ role: 'librarian', content: response });
     appendLibrarianMessage(response);
@@ -611,7 +618,7 @@ async function processAgentTurn(userMessage: string): Promise<void> {
    ------------------------------------------------------------- */
 function initApp(): void {
   try {
-    const profile = JSON.parse(localStorage.getItem('reading-agent-profile') || '{}');
+    const profile = JSON.parse(accountGet('reading-agent-profile') || '{}');
     if (profile.grade) {
       if (profile.grade === '중1') AgentState.userGrade = '중학교 1학년';
       else if (profile.grade === '중2') AgentState.userGrade = '중학교 2학년';
@@ -780,9 +787,9 @@ function readThisBook(title: string, author: string): void {
   // 1. ReadingState 세션에 제목 저장 (로컬스토리지 영속화)
   try {
     const sessionKey = 'reading-agent-current-session';
-    const session = JSON.parse(localStorage.getItem(sessionKey) || '{}');
+    const session = JSON.parse(accountGet(sessionKey) || '{}');
     session.bookTitle = fullTitle;
-    localStorage.setItem(sessionKey, JSON.stringify(session));
+    accountSet(sessionKey, JSON.stringify(session));
   } catch (e) {
     console.error('세션 저장 실패:', e);
   }
@@ -974,8 +981,10 @@ function sendQuickPrompt(promptText: string): void {
 }
 
 function requestNoteForBook(bookId?: string): void {
+  const revision = getAccountRevision();
   appendUserMessage(`이 책으로 독서 노트 작성해줘.`);
   setTimeout(() => {
+    if (revision !== getAccountRevision()) return;
     const toolRes = AgentTools.makeStudyMarkdown({ bookId: bookId });
     
     AgentState.turnCount++;
@@ -1004,7 +1013,7 @@ function handleGradeChange(newGrade: string): void {
     let simpleGrade = '중1';
     if (newGrade.includes('2')) simpleGrade = '중2';
     else if (newGrade.includes('3')) simpleGrade = '중3';
-    localStorage.setItem('reading-agent-profile', JSON.stringify({ grade: simpleGrade }));
+    accountSet('reading-agent-profile', JSON.stringify({ grade: simpleGrade }));
   } catch (e) {
     console.warn('프로필 저장 실패:', e);
   }
@@ -1157,12 +1166,41 @@ function resetSession(): void {
     if (input) { input.value = ''; input.style.height = 'auto'; }
     initApp();
     renderHud();
+    persistCurator();
   }
 }
 
 function clearTaoFeed(): void {
   requiredElement('taoTimeline').innerHTML = "";
 }
+
+function persistCurator(): void {
+  try { accountSet('pageon-current-recommendation', JSON.stringify(AgentState)); }
+  catch { console.warn('책 추천 기록을 저장하지 못했습니다.'); }
+}
+
+subscribeAccount(() => {
+  Object.assign(AgentState, { userGrade: '중학교 1학년', userInterests: [], recommendedBooks: [],
+    currentDocument: null, chatHistory: [], turnCount: 0 });
+  try {
+    const saved = accountGet('pageon-current-recommendation');
+    if (saved) Object.assign(AgentState, JSON.parse(saved) as CuratorState);
+  } catch { console.warn('책 추천 기록을 복원하지 못했습니다.'); }
+  requiredElement('chatMessages').replaceChildren();
+  requiredElement('taoTimeline').replaceChildren();
+  requiredElement('noteModal').classList.remove('active');
+  requiredElement('noteModalBody').replaceChildren();
+  requiredElement('headerNoteBtn').style.display = 'none';
+  const input = requiredElement<HTMLTextAreaElement>('chatInput');
+  input.value = '';
+  initApp();
+  for (const message of AgentState.chatHistory) {
+    if (message.role === 'user') appendUserMessage(message.content);
+    else appendLibrarianMessage(message.content);
+  }
+  if (AgentState.recommendedBooks.length) appendLibrarianMessage('이 계정에서 찾은 책', AgentState.recommendedBooks.slice(-3));
+  renderHud();
+});
 
 function escapeHtml(str: unknown): string {
   if (!str) return "";
@@ -1180,6 +1218,7 @@ requiredElement('header-container').innerHTML = serviceHeader('recommend',
   </select>`, '<button class="btn-secondary-sm" data-reset-recommendation onclick="resetSession()">새 세션</button>');
 
 bindHistoryButton(requiredElement('header-container'));
+mountAuth(requiredElement('header-container'));
 
 // Preserve existing HTML event bindings when bundled as an ES module.
 Object.assign(window, { handleGradeChange, resetSession, sendQuickPrompt, handleInputKeydown,

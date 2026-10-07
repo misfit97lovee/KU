@@ -1,4 +1,5 @@
 import { saveSessionSnapshot } from './sessionHistory.ts';
+import { accountGet, accountSet, subscribeAccount } from './accountStorage.ts';
 import type { ComprehensionCheck, Grade, MessageImage, ReadingMessage, ReadingState, TaoLog } from './types/index.ts';
 
 /**
@@ -39,12 +40,16 @@ class StateManager {
   constructor() {
     this.state = this.loadState();
     this.listeners = [];
+    subscribeAccount(() => {
+      this.state = this.loadState();
+      this.listeners.forEach(fn => fn(this.state));
+    });
   }
 
   loadState(): ReadingState {
     try {
-      const profile = JSON.parse(localStorage.getItem(STORAGE_KEYS.PROFILE) || '{}') as { grade?: Grade };
-      const session = JSON.parse(localStorage.getItem(STORAGE_KEYS.SESSION) || '{}') as {
+      const profile = JSON.parse(accountGet(STORAGE_KEYS.PROFILE) || '{}') as { grade?: Grade };
+      const session = JSON.parse(accountGet(STORAGE_KEYS.SESSION) || '{}') as {
         bookTitle?: string;
         recentMessages?: ReadingMessage[];
         difficultPoints?: string[];
@@ -55,6 +60,7 @@ class StateManager {
         suggestedQuestions?: string[];
         isQuizActive?: boolean;
         taoLogs?: TaoLog[];
+        sourceText?: string;
       };
 
       return {
@@ -72,7 +78,8 @@ class StateManager {
           readingNote: session.readingNote || null,
           comprehensionChecks: session.comprehensionChecks || [],
           suggestedQuestions: session.suggestedQuestions || [],
-          isQuizActive: Boolean(session.isQuizActive)
+          isQuizActive: Boolean(session.isQuizActive),
+          sourceText: session.sourceText || ''
         },
         taoLogs: session.taoLogs || []
       };
@@ -84,11 +91,11 @@ class StateManager {
 
   saveState(): void {
     try {
-      localStorage.setItem(STORAGE_KEYS.PROFILE, JSON.stringify({
+      accountSet(STORAGE_KEYS.PROFILE, JSON.stringify({
         grade: this.state.student.grade
       }));
 
-      localStorage.setItem(STORAGE_KEYS.SESSION, JSON.stringify({
+      accountSet(STORAGE_KEYS.SESSION, JSON.stringify({
         bookTitle: this.state.book.title,
         recentMessages: this.state.session.recentMessages,
         difficultPoints: this.state.session.difficultPoints,
@@ -98,7 +105,8 @@ class StateManager {
         comprehensionChecks: this.state.session.comprehensionChecks,
         suggestedQuestions: this.state.session.suggestedQuestions,
         isQuizActive: Boolean(this.state.session.isQuizActive),
-        taoLogs: this.state.taoLogs
+        taoLogs: this.state.taoLogs,
+        sourceText: this.state.session.sourceText || ''
       }));
     } catch (e) {
       console.error('로컬스토리지 저장 실패:', e);
@@ -153,6 +161,11 @@ class StateManager {
 
   setSummary(summaryText: string): void {
     this.state.session.summary = summaryText;
+    this.notify();
+  }
+
+  setSourceText(text: string): void {
+    this.state.session.sourceText = text;
     this.notify();
   }
 

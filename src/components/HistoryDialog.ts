@@ -2,6 +2,9 @@ import { getSavedSessions } from '../sessionHistory.ts';
 import type { SavedSession } from '../sessionHistory.ts';
 import { formatText } from '../formatText.ts';
 import { getUnderstandingData } from './ReadingRecordPanel.ts';
+import { subscribeAccount } from '../accountStorage.ts';
+
+subscribeAccount(() => document.getElementById('history-dialog-overlay')?.remove());
 
 const escape = (value: unknown): string => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 

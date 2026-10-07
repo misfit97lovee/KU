@@ -153,6 +153,7 @@ export interface ReadingState {
     comprehensionChecks: ComprehensionCheck[];
     suggestedQuestions: string[];
     isQuizActive: boolean;
+    sourceText?: string;
   };
   taoLogs: TaoLog[];
 }
@@ -182,6 +183,7 @@ export interface GeminiGenerationResult {
 }
 
 export interface ReadingApiResponse {
+  extractedText?: string | null;
   message?: string;
   summary?: string;
   readingNote?: string;

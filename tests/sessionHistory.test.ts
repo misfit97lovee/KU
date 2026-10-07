@@ -6,6 +6,9 @@ import { transformSync } from 'esbuild';
 import { HISTORY_KEY, getSavedSessions, saveSessionSnapshot } from '../src/sessionHistory.ts';
 import type { StorageAccess } from '../src/sessionHistory.ts';
 import type { ReadingState } from '../src/types/index.ts';
+import { accountKey, setAccount } from '../src/accountStorage.ts';
+
+setAccount('test-reader');
 
 function memoryStorage(): StorageAccess {
   const map = new Map<string, string>();
@@ -59,9 +62,9 @@ test('실제 StateManager 새 세션: 저장 후 이해도 체크를 포함한 �
   assert.equal(current.book.title, ''); assert.equal(current.student.grade, '중2');
   for (const key of ['recentMessages','comprehensionChecks','difficultPoints','understoodPoints','suggestedQuestions'] as const) assert.deepEqual(current.session[key], []);
   assert.equal(current.session.summary, null); assert.equal(current.session.readingNote, null); assert.equal(current.session.isQuizActive, false);
-  assert.deepEqual(JSON.parse(storage.getItem('reading-agent-current-session') || '{}').comprehensionChecks, []);
-  const archive = storage.getItem(HISTORY_KEY);
-  const failStorage: StorageAccess = { getItem: (key: string) => key === HISTORY_KEY ? archive : null, setItem: () => { throw Error('quota'); } };
+  assert.deepEqual(JSON.parse(storage.getItem(accountKey('reading-agent-current-session')!) || '{}').comprehensionChecks, []);
+  const archive = storage.getItem(accountKey(HISTORY_KEY)!);
+  const failStorage: StorageAccess = { getItem: (key: string) => key === accountKey(HISTORY_KEY) ? archive : null, setItem: () => { throw Error('quota'); } };
   globalThis.localStorage = failStorage as Storage;
   stateManager.state = structuredClone(original);
   assert.throws(() => stateManager.resetSession()); assert.deepEqual(stateManager.getState(), original);
@@ -77,7 +80,7 @@ test('책 추천의 새 세션도 먼저 보관하고, 저장 실패 시 초기�
     const state = { userGrade: '중2', turnCount: 1, chatHistory: [{ role: 'user', content: '물리학 책' }], userInterests: ['물리학'], recommendedBooks: [{ title: '검증된 책' }], currentDocument: { markdown: '독서노트' } };
     const before = structuredClone(state); let saved: typeof state | undefined;
     const requiredElement = () => ({ innerHTML: '', value: '', style: {} });
-    const context = { isRecommendationLoading: false, AgentState: state, confirm: () => true, alert() {}, initApp() {}, renderHud() {},
+    const context = { isRecommendationLoading: false, AgentState: state, confirm: () => true, alert() {}, initApp() {}, renderHud() {}, persistCurator() {},
       requiredElement, document: { getElementById: requiredElement }, saveSessionSnapshot: (_kind: string, value: typeof state) => { if (fail) throw Error('quota'); saved = structuredClone(value); } };
     vm.createContext(context); vm.runInContext(reset, context); vm.runInContext('resetSession()', context);
     if (fail) assert.deepEqual(state, before);

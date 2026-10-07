@@ -3,5 +3,7 @@ dist/
 .DS_Store
 .env
 .env.*
+!.env.example
 *.log
 scratch/
+server/data/

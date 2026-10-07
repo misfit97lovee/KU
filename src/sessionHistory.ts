@@ -1,4 +1,5 @@
 import type { ComprehensionCheck, MessageImage, RecommendedBook } from './types/index.ts';
+import { accountGet, accountSet, getAccountId } from './accountStorage.ts';
 
 export const HISTORY_KEY = 'pageon-saved-sessions';
 
@@ -35,7 +36,7 @@ export interface SavedSession {
 export type StorageAccess = Pick<Storage, 'getItem' | 'setItem'>;
 
 export function getSavedSessions(storage: StorageAccess = localStorage): SavedSession[] {
-  const raw = storage.getItem(HISTORY_KEY);
+  const raw = accountGet(HISTORY_KEY, storage);
   if (!raw) return [];
   const records = JSON.parse(raw);
   if (!Array.isArray(records)) throw new Error('저장기록을 읽을 수 없습니다.');
@@ -43,6 +44,7 @@ export function getSavedSessions(storage: StorageAccess = localStorage): SavedSe
 }
 
 export function saveSessionSnapshot(kind: SessionKind, snapshot: object, storage: StorageAccess = localStorage): SavedSession | null {
+  if (!getAccountId()) return null;
   const value = snapshot as SessionSnapshot;
   const session = value.session || {};
   const hasContent = kind === 'reading'
@@ -58,6 +60,6 @@ export function saveSessionSnapshot(kind: SessionKind, snapshot: object, storage
   };
   // Persist first. If storage is full/unavailable/corrupt, throw and retain the live session.
   const records = getSavedSessions(storage);
-  storage.setItem(HISTORY_KEY, JSON.stringify([record, ...records]));
+  accountSet(HISTORY_KEY, JSON.stringify([record, ...records]), storage);
   return record;
 }

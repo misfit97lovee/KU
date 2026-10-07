@@ -364,7 +364,7 @@ test('브라우저는 빈 결과와 서버 실패를 내장 책으로 바꾸지 
   for (const offline of [false, true]) {
     const shown: Array<{ text: string; books?: Book[] | null }> = [];
     const state: { turnCount: number; chatHistory: unknown[]; recommendedBooks: Book[] } = { turnCount: 0, chatHistory: [], recommendedBooks: [] };
-    const context = { document: { querySelector: () => null, getElementById: () => null }, AgentState: state, SafetyGuardrail: { check: () => ({ isSafe: true }) }, extractInterests() {},
+    const context = { getAccountRevision: () => 1, persistCurator() {}, document: { querySelector: () => null, getElementById: () => null }, AgentState: state, SafetyGuardrail: { check: () => ({ isSafe: true }) }, extractInterests() {},
       callRecommendBooksApi: async () => { if (offline) throw Error('offline'); return { success: true, books: [], response: NO_MATCH_MESSAGE }; },
       renderHud() {}, renderTaoTurn() {}, appendLibrarianMessage: (text: string, books?: Book[] | null) => shown.push({ text, books }) };
     vm.createContext(context); vm.runInContext(turn, context);
@@ -381,7 +381,7 @@ test('브라우저 추천 카드는 YES24 책을 숨기지 않고 표지와 링�
     sourceType: 'yes24', reason: '추천 이유', relevanceScore: 90 };
   let shown: { text: string; books?: Book[] | null } | undefined;
   const state: { turnCount: number; chatHistory: unknown[]; recommendedBooks: Book[] } = { turnCount: 0, chatHistory: [], recommendedBooks: [] };
-  const context = { document: { querySelector: () => null, getElementById: () => null }, AgentState: state,
+  const context = { getAccountRevision: () => 1, persistCurator() {}, document: { querySelector: () => null, getElementById: () => null }, AgentState: state,
     SafetyGuardrail: { check: () => ({ isSafe: true }) }, extractInterests() {},
     callRecommendBooksApi: async () => ({ success: true, books: [yes24], response: '1권 추천', search: {} }),
     renderHud() {}, renderTaoTurn() {}, appendLibrarianMessage: (text: string, books?: Book[] | null) => { shown = { text, books }; } };
@@ -397,7 +397,7 @@ test('[이 책 읽기]는 기존 세션 보존 + 제목 전달로 동작', () =>
   const pick = transpile(source.slice(source.indexOf('function readThisBook'), source.indexOf('function appendLibrarianMessage')));
   let saved: { bookTitle?: string; recentMessages?: string[] } | undefined;
   const location: { href?: string } = {};
-  const context = { localStorage: { getItem: () => JSON.stringify({ recentMessages: ['기존 대화'] }), setItem: (_: string, value: string) => { saved = JSON.parse(value); } }, window: { location }, console };
+  const context = { accountGet: () => JSON.stringify({ recentMessages: ['기존 대화'] }), accountSet: (_: string, value: string) => { saved = JSON.parse(value); }, window: { location }, console };
   vm.createContext(context); vm.runInContext(pick, context); vm.runInContext("readThisBook('코스모스', '칼 세이건')", context);
   assert.equal(saved!.bookTitle, '코스모스 (칼 세이건)'); assert.deepEqual(saved!.recentMessages, ['기존 대화']);
   assert.equal(context.window.location.href, '/?title=' + encodeURIComponent(saved!.bookTitle!));

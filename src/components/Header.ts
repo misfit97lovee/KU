@@ -1,4 +1,5 @@
 import { openHistoryDialog } from './HistoryDialog.ts';
+import { mountAuth } from '../auth.ts';
 import type { ReadingState } from '../types/index.ts';
 
 type ActivePage = 'recommend' | 'reading';
@@ -18,7 +19,7 @@ export function serviceHeader(activePage: ActivePage, gradeControl: string, rese
         <a href="/" ${activePage === 'reading' ? 'aria-current="page"' : ''}>읽기 도우미</a>
         <a href="/#panel-record">독서 기록</a>
       </nav>
-      <div class="header-right"><button type="button" class="btn-secondary-sm" data-open-history>저장기록</button>${gradeControl}${resetControl}</div>
+      <div class="header-right"><button type="button" class="btn-secondary-sm" data-open-history>저장기록</button>${gradeControl}${resetControl}<div class="auth-controls" data-auth-controls></div></div>
     </div>`;
 }
 
@@ -35,6 +36,7 @@ export function renderHeader(container: HTMLElement, state: ReadingState, { onOp
     </div>`;
 
   bindHistoryButton(container);
+  mountAuth(container);
   const titleInput = container.querySelector<HTMLInputElement>('#header-book-title')!;
   titleInput.value = state.book.title || '';
   titleInput.addEventListener('change', (e) => onTitleChange((e.target as HTMLInputElement).value.trim()));

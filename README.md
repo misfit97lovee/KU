@@ -18,16 +18,23 @@ npm install
 # 환경 변수 설정 (.env)
 # .env 파일 생성 후 GEMINI_API 입력
 GEMINI_API=your_gemini_api_key_here
+VITE_GOOGLE_CLIENT_ID=your_web_client_id.apps.googleusercontent.com
 
 # 개발 서버 실행
 npm run dev
 ```
 
+Google 로그인은 Google Cloud에서 만든 **웹 애플리케이션 OAuth 클라이언트 ID**를 사용합니다. 개발용 승인된 JavaScript 원본에 `http://localhost:5173`을 추가하세요. 같은 ID를 브라우저와 Express 서버가 사용하며 Client Secret은 필요하지 않습니다. 로그인한 사용자의 이름·이메일·프로필 이미지와 30일 세션은 서버의 `server/data/auth.json`에 저장됩니다. 이 파일은 Git에서 제외됩니다. 운영 환경에서는 서버 저장 파일을 지속 저장소에 두고 HTTPS로 서비스하세요.
+
+헤더의 Google 버튼으로 로그인하고, 프로필 옆 **로그아웃** 버튼으로 세션을 종료할 수 있습니다. 새로고침 시 서버가 HttpOnly 쿠키로 로그인 상태를 복원합니다. 독서 상태·저장기록·책 추천 상태는 검증된 Google `sub`별 localStorage 키에 저장됩니다. 로그아웃하면 화면과 메모리만 비우고 계정 기록은 보존합니다. 소유자를 확인할 수 없는 예전 공통 키 기록은 삭제하지 않으며, 어느 계정에도 자동으로 보여주지 않습니다.
+
+독서 API는 최근 대화 6개와 이전 대화의 압축 기록, 현재 책/필요한 상태만 받습니다. 사진은 새로 업로드할 때만 전송하고 OCR 본문은 후속 텍스트 대화에 재사용합니다. Gemini 호출은 요청당 1회이며 503/429 재시도 없이 텍스트 12초, 사진 20초로 제한합니다. 기본 모델은 `gemini-flash-lite-latest`이며 `GEMINI_READING_MODEL`로 별도 지정할 수 있습니다. Gemini 2.5 Flash를 지정한 경우 thinking budget은 [공식 문서](https://ai.google.dev/gemini-api/docs/generate-content/thinking)에 따라 0으로 설정합니다. 서버 실행 후 `node --import tsx tests/readingChat.live.ts`로 텍스트 대화 3회의 실제 응답시간을 측정합니다.
+
 ## 페이지온 저장기록
 - 두 화면의 **새 세션**은 현재 기록을 먼저 저장기록에 보관한 후 시작합니다.
 - 읽기 도우미의 대화·사진·근거·요약·독서노트·이해도 상태를 함께 보관합니다. 책 추천 대화와 추천 도서도 보관합니다.
 - 공통 헤더의 **저장기록**에서 지난 세션을 읽을 수 있습니다. 보관함을 열어도 현재 세션은 바뀌지 않습니다.
-- 기록은 이 브라우저의 localStorage에 저장됩니다. 저장 공간 부족이나 저장 오류가 나면 현재 세션을 초기화하지 않습니다.
+- 기록은 로그인한 계정별로 이 브라우저의 localStorage에 저장됩니다. 저장 공간 부족이나 저장 오류가 나면 현재 세션을 초기화하지 않습니다.
 
 ## 책 추천 검증
 - 요청을 구조화한 뒤 도서관정보나루 후보의 주제·난이도 적합성을 검증합니다. 75점 이상만 최대 3권 표시하며 빈자리를 임의로 채우지 않습니다.

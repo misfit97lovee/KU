@@ -1,4 +1,6 @@
 import { stateManager } from './state.ts';
+import { accountFetch, getAccountId, subscribeAccount } from './accountStorage.ts';
+import { buildReadingRequest } from './readingRequest.ts';
 import { renderHeader } from './components/Header.ts';
 import { renderOnboardingModal } from './components/OnboardingModal.ts';
 import { renderBookInputPanel } from './components/BookInputPanel.ts';
@@ -10,6 +12,7 @@ let isLoading = false;
 let isSummaryLoading = false;
 let isReadingNoteLoading = false;
 let isModalOpen = false;
+let initialTitleHandled = false;
 
 // DOM 엘리먼트 캐시
 const headerEl = document.getElementById('header-container')!;
@@ -142,26 +145,16 @@ async function handleSendMessage(content: string): Promise<void> {
   if (isLoading) return;
 
   stateManager.addMessage('user', content);
+  if (content.startsWith('[책 내용]')) stateManager.setSourceText(content.slice(0, 6000));
   isLoading = true;
   renderApp();
 
   try {
     const state = stateManager.getState();
-    const response = await fetch('/api/chat', {
+    const response = await accountFetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages: state.session.recentMessages,
-        readingState: {
-          student: state.student,
-          book: state.book,
-          session: {
-            difficultPoints: state.session.difficultPoints,
-            understoodPoints: state.session.understoodPoints,
-            comprehensionChecks: state.session.comprehensionChecks
-          }
-        }
-      })
+      body: JSON.stringify(buildReadingRequest(state))
     });
 
     const data = await response.json() as ReadingApiResponse;
@@ -208,6 +201,7 @@ async function handleSendMessage(content: string): Promise<void> {
       stateManager.addComprehensionCheck(data.comprehensionCheck);
     }
   } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return;
     console.error('채팅 요청 에러:', err);
     showAlert('일시적으로 연결되지 않았습니다. 잠시 후 다시 시도해 주세요.');
     stateManager.addMessage(
@@ -233,19 +227,11 @@ async function handleSendImageMessage({ text, image }: { text: string; image: Me
 
   try {
     const state = stateManager.getState();
-    const response = await fetch('/api/chat', {
+    const response = await accountFetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        messages: state.session.recentMessages,
-        readingState: {
-          student: state.student,
-          book: state.book,
-          session: {
-            difficultPoints: state.session.difficultPoints,
-            understoodPoints: state.session.understoodPoints
-          }
-        },
+        ...buildReadingRequest(state),
         image: image // { data: base64, mimeType }
       })
     });
@@ -256,6 +242,7 @@ async function handleSendImageMessage({ text, image }: { text: string; image: Me
       throw new Error(data.details || data.error || '사진 분석 요청에 실패했습니다.');
     }
 
+    if (data.extractedText) stateManager.setSourceText(data.extractedText);
     if (data.message) {
       stateManager.setQuizActive(false);
       // 사진 등록 직후 후보 좁히기 질문은 버튼 비활성화
@@ -275,6 +262,7 @@ async function handleSendImageMessage({ text, image }: { text: string; image: Me
       stateManager.addTaoLog(data.tao);
     }
   } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return;
     console.error('사진 분석 요청 에러:', err);
     showAlert('책 사진을 분석하는 중 문제가 발생했습니다. 사진이 너무 크거나 흐리지 않은지 확인해 주세요.');
     stateManager.addMessage(
@@ -303,21 +291,10 @@ async function handleExplainLevel(level: string): Promise<void> {
 
   try {
     const state = stateManager.getState();
-    const response = await fetch('/api/chat', {
+    const response = await accountFetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages: state.session.recentMessages,
-        readingState: {
-          student: state.student,
-          book: state.book,
-          session: {
-            difficultPoints: state.session.difficultPoints,
-            understoodPoints: state.session.understoodPoints
-          }
-        },
-        explanationLevel: level
-      })
+      body: JSON.stringify(buildReadingRequest(state, level))
     });
 
     const data = await response.json() as ReadingApiResponse;
@@ -342,6 +319,7 @@ async function handleExplainLevel(level: string): Promise<void> {
       stateManager.addComprehensionCheck(data.comprehensionCheck);
     }
   } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return;
     console.error('설명 난이도 요청 에러:', err);
     showAlert(`설명 변환 실패: ${errorMessage(err)}`);
   } finally {
@@ -365,22 +343,10 @@ async function handleCheckUnderstanding(): Promise<void> {
 
   try {
     const state = stateManager.getState();
-    const response = await fetch('/api/chat', {
+    const response = await accountFetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages: state.session.recentMessages,
-        readingState: {
-          student: state.student,
-          book: state.book,
-          session: {
-            difficultPoints: state.session.difficultPoints,
-            understoodPoints: state.session.understoodPoints,
-            comprehensionChecks: state.session.comprehensionChecks
-          }
-        },
-        explanationLevel: 'quiz_request'
-      })
+      body: JSON.stringify(buildReadingRequest(state, 'quiz_request'))
     });
 
     const data = await response.json() as ReadingApiResponse;
@@ -403,6 +369,7 @@ async function handleCheckUnderstanding(): Promise<void> {
       stateManager.addComprehensionCheck(data.comprehensionCheck);
     }
   } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return;
     console.error('이해 확인 질문 에러:', err);
     showAlert('이해 확인 질문을 생성하는 중 문제가 발생했습니다. 잠시 후 다시 시도해 주세요.');
   } finally {
@@ -427,16 +394,10 @@ async function handleGenerateSummary(): Promise<void> {
   renderApp();
 
   try {
-    const response = await fetch('/api/summary', {
+    const response = await accountFetch('/api/summary', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages: state.session.recentMessages,
-        readingState: {
-          student: state.student,
-          book: state.book
-        }
-      })
+      body: JSON.stringify(buildReadingRequest(state))
     });
 
     const data = await response.json() as ReadingApiResponse;
@@ -452,6 +413,7 @@ async function handleGenerateSummary(): Promise<void> {
       stateManager.addTaoLog(data.tao);
     }
   } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return;
     console.error('요약 생성 에러:', err);
     showAlert('독서 요약을 생성하는 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.');
   } finally {
@@ -476,21 +438,10 @@ async function handleGenerateReadingNote(): Promise<void> {
   renderApp();
 
   try {
-    const response = await fetch('/api/reading-note', {
+    const response = await accountFetch('/api/reading-note', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages: state.session.recentMessages,
-        readingState: {
-          student: state.student,
-          book: state.book,
-          session: {
-            difficultPoints: state.session.difficultPoints,
-            understoodPoints: state.session.understoodPoints,
-            comprehensionChecks: state.session.comprehensionChecks
-          }
-        }
-      })
+      body: JSON.stringify(buildReadingRequest(state))
     });
 
     const data = await response.json() as ReadingApiResponse;
@@ -506,6 +457,7 @@ async function handleGenerateReadingNote(): Promise<void> {
       stateManager.addTaoLog(data.tao);
     }
   } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return;
     console.error('독서노트 생성 에러:', err);
     showAlert(`독서노트 생성 중 오류: ${errorMessage(err)}`);
   } finally {
@@ -562,6 +514,16 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 // 상태 변경 시 리렌더링
+subscribeAccount(() => {
+  isModalOpen = false;
+  alertBannerEl?.classList.add('hidden');
+  const title = new URLSearchParams(window.location.search).get('title');
+  if (getAccountId() && !initialTitleHandled) {
+    initialTitleHandled = true;
+    if (title) stateManager.setBookTitle(title);
+  }
+  renderApp();
+});
 stateManager.subscribe(() => {
   renderApp();
 });

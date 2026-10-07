@@ -1,6 +1,9 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import { createAuthRouter } from './auth.ts';
+import { callReadingGemini } from './readingGemini.ts';
+import { compactReadingBody, readingMemory } from './readingContext.ts';
 import { buildSystemPrompt, buildSummaryPrompt, buildReadingNotePrompt } from './prompts.ts';
 import { createRecommendationService, createGeminiRecommendationClient, parseBookSearchXml } from './bookRecommendations.ts';
 import type {
@@ -80,6 +83,7 @@ export function sanitizeError(error: unknown): string {
 // 미들웨어 설정 (이미지 Base64 처리를 위해 20MB로 넉넉하게 설정)
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
+app.use('/api/auth', createAuthRouter({ clientId: process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '' }));
 
 // 헬스체크 엔드포인트
 app.get('/api/health', (req, res) => {
@@ -241,95 +245,11 @@ app.get('/api/library/items', async (req, res) => {
 });
 
 /**
- * Gemini API 호출 헬퍼 (호환 모델 및 재시도 지원, 타임아웃 및 키 헤더 전송)
+ * 독서 요청당 한 번만 호출, 텍스트 12초/사진 20초 제한
  */
-async function callGemini(contents: GeminiContent[], systemInstruction: string, preferredModel = 'gemini-flash-latest'): Promise<{ text: string; modelUsed: string }> {
-  if (!apiKey) {
-    throw new Error('Gemini API 키가 서버 .env에 설정되어 있지 않습니다.');
-  }
-
-  const candidateModels = [
-    preferredModel,
-    'gemini-flash-latest',
-    'gemini-2.5-flash',
-    'gemini-flash-lite-latest',
-    'gemini-2.5-flash-lite',
-    'gemini-3.7-flash',
-    'gemini-3.5-flash'
-  ];
-  const modelsToTry = [...new Set(candidateModels)];
-
-  let lastError: Error | null = null;
-
-  for (const model of modelsToTry) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-        const payload = {
-          contents,
-          systemInstruction: {
-            parts: [{ text: systemInstruction }]
-          },
-          generationConfig: {
-            temperature: 0.7,
-            topP: 0.95
-          }
-        };
-
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey
-          },
-          body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(30000)
-        });
-
-        const data = await response.json() as GeminiResponse;
-
-        if (!response.ok) {
-          const errMsg = data.error?.message || response.statusText || 'API 오류';
-
-          if (response.status === 404 && (errMsg.includes('no longer available') || errMsg.includes('not found') || errMsg.includes('not supported'))) {
-            console.warn(`[Gemini Model Fallback] ${model} 사용 불가 -> 다음 모델로 전환합니다.`);
-            lastError = new Error(errMsg);
-            break;
-          }
-
-          if (response.status === 503 || response.status === 429 || errMsg.includes('high demand') || errMsg.includes('Quota exceeded')) {
-            console.warn(`[Gemini Retry/Fallback] ${model} 일시적 부하 또는 쿼터 제한 발생 (시도 ${attempt + 1}/2): ${errMsg}`);
-            lastError = new Error(errMsg);
-            if (attempt === 1) break; // 2번 실패 시 다음 모델로 전환
-            await new Promise(r => setTimeout(r, 800));
-            continue;
-          }
-
-          throw new Error(errMsg || `API 요청 실패 (${response.status})`);
-        }
-
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (!text) {
-          throw new Error('Gemini로부터 유효한 응답 텍스트를 받지 못했습니다.');
-        }
-
-        return { text, modelUsed: model };
-      } catch (err: unknown) {
-        const caught = err instanceof Error ? err : new Error(String(err));
-        lastError = caught;
-        if (caught.name === 'TimeoutError' || caught.name === 'AbortError') {
-          console.warn(`[Gemini Timeout] ${model} 호출 시간 초과`);
-          continue;
-        }
-        if (caught.message && (caught.message.includes('no longer available') || caught.message.includes('high demand'))) {
-          break;
-        }
-        throw caught;
-      }
-    }
-  }
-
-  throw lastError || new Error('사용 가능한 Gemini 모델을 찾을 수 없습니다.');
+async function callGemini(contents: GeminiContent[], systemInstruction: string, preferredModel = 'gemini-flash-lite-latest'): Promise<{ text: string; modelUsed: string }> {
+  return callReadingGemini(contents, systemInstruction, apiKey, preferredModel,
+    contents.some(content => content.parts.some(part => 'inlineData' in part)) ? 20000 : 12000);
 }
 
 /**
@@ -445,13 +365,13 @@ function parseGeminiResponse(rawText: string): ParsedGeminiResponse {
  */
 app.post('/api/chat', async (req, res) => {
   try {
-    const { messages = [], readingState = {}, image = null, explanationLevel = null } = req.body as ChatBody;
+    const { messages, readingState, image, explanationLevel, conversationSummary, sourceText } = compactReadingBody(req.body || {});
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: '대화 메시지(messages) 목록이 필요합니다.' });
     }
 
-    const systemPrompt = buildSystemPrompt(readingState, explanationLevel);
+    const systemPrompt = buildSystemPrompt(readingState, explanationLevel) + readingMemory(conversationSummary, sourceText);
 
     // Gemini API 포맷으로 메시지 변환 (role: user / model)
     const contents: GeminiContent[] = messages.map((msg, idx) => {
@@ -491,13 +411,13 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
-    const preferredModel = process.env.GEMINI_MODEL || 'gemini-flash-latest';
+    const preferredModel = process.env.GEMINI_READING_MODEL || process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
     const { text, modelUsed } = await callGemini(contents, systemPrompt, preferredModel);
     const { message, evidence: rawEvidence = [], suggestedQuestions = [], tao, comprehensionCheck, extractedText } = parseGeminiResponse(text);
 
     // 실제 입력된 텍스트 및 추출 텍스트에서 검증된 근거만 필터링
     const userMessages = messages.filter(m => m.role === 'user').map(m => m.content);
-    const verifiedEvidence = validateEvidence(rawEvidence, { userMessages, extractedText });
+    const verifiedEvidence = validateEvidence(rawEvidence, { userMessages: [...userMessages, sourceText], extractedText });
 
     const featureName = image ? '책 사진 분석' : (explanationLevel ? `설명 전환(${explanationLevel})` : '대화 응답');
     console.log(`[Gemini 호출 성공] 기능: ${featureName} | 사용 모델: ${modelUsed}`);
@@ -509,6 +429,7 @@ app.post('/api/chat', async (req, res) => {
 
     return res.json({
       message,
+      extractedText,
       evidence: isQuizQuestion ? [] : verifiedEvidence,
       suggestedQuestions: isQuizQuestion ? [] : suggestedQuestions,
       tao,
@@ -531,13 +452,13 @@ app.post('/api/chat', async (req, res) => {
  */
 app.post('/api/summary', async (req, res) => {
   try {
-    const { messages = [], readingState = {} } = req.body as SummaryBody;
+    const { messages, readingState, conversationSummary, sourceText } = compactReadingBody(req.body || {});
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: '요약할 대화 기록이 없습니다.' });
     }
 
-    const summaryPrompt = buildSummaryPrompt(readingState);
+    const summaryPrompt = buildSummaryPrompt(readingState) + readingMemory(conversationSummary, sourceText);
 
     const contents: GeminiContent[] = messages.map(msg => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
@@ -549,7 +470,7 @@ app.post('/api/summary', async (req, res) => {
       parts: [{ text: '지금까지 우리가 대화에서 확인한 책 내용을 바탕으로 독서 요약을 작성해줘.' }]
     });
 
-    const preferredModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+    const preferredModel = process.env.GEMINI_READING_MODEL || process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
     const { text, modelUsed } = await callGemini(contents, summaryPrompt, preferredModel);
     const { summary, tao } = parseGeminiResponse(text);
 
@@ -578,13 +499,13 @@ app.post('/api/summary', async (req, res) => {
  */
 app.post('/api/reading-note', async (req, res) => {
   try {
-    const { messages = [], readingState = {} } = req.body as SummaryBody;
+    const { messages, readingState, conversationSummary, sourceText } = compactReadingBody(req.body || {});
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: '독서노트를 작성할 대화 기록이 없습니다.' });
     }
 
-    const notePrompt = buildReadingNotePrompt(readingState);
+    const notePrompt = buildReadingNotePrompt(readingState) + readingMemory(conversationSummary, sourceText);
 
     const contents: GeminiContent[] = messages.map(msg => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
@@ -596,7 +517,7 @@ app.post('/api/reading-note', async (req, res) => {
       parts: [{ text: '지금까지 대화에서 다룬 내용과 독서 상태를 바탕으로 주어진 형식에 맞추어 오늘의 독서노트를 작성해줘.' }]
     });
 
-    const preferredModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+    const preferredModel = process.env.GEMINI_READING_MODEL || process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
     const { text, modelUsed } = await callGemini(contents, notePrompt, preferredModel);
 
     let readingNote = text;

@@ -5,6 +5,8 @@
  * 기존 업로드 흐름(File 객체)과 동일하게 전달합니다.
  */
 
+import { subscribeAccount } from '../accountStorage.ts';
+
 export interface CameraModalOptions {
   onCapture: (file: File) => void;
   onSelectFileFallback?: () => void;
@@ -59,6 +61,7 @@ export function openCameraModal(options: CameraModalOptions): () => void {
   let capturedFile: File | null = null;
   let previewBlobUrl: string | null = null;
   let isClosed = false;
+  const unsubscribeAccount = subscribeAccount(() => closeModal());
 
   const backdrop = document.createElement('div');
   backdrop.className = 'camera-modal-backdrop';
@@ -144,6 +147,7 @@ export function openCameraModal(options: CameraModalOptions): () => void {
       previewBlobUrl = null;
     }
 
+    unsubscribeAccount();
     document.removeEventListener('keydown', handleKeyDown);
     if (backdrop.parentNode) {
       backdrop.parentNode.removeChild(backdrop);
