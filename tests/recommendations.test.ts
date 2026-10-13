@@ -402,3 +402,66 @@ test('[이 책 읽기]는 기존 세션 보존 + 제목 전달로 동작', () =>
   assert.equal(saved!.bookTitle, '코스모스 (칼 세이건)'); assert.deepEqual(saved!.recentMessages, ['기존 대화']);
   assert.equal(context.window.location.href, '/?title=' + encodeURIComponent(saved!.bookTitle!));
 });
+
+test('작품처럼 시대 조건은 similar로 보정하고 두 API 고전 후보를 한 번에 평가한다', async () => {
+  for (const referenceTitle of ['구운몽', '홍길동전']) {
+    const reference: Book = { title: referenceTitle, author: '기준 저자', category: '한국 고전소설', sourceType: 'yes24' };
+    const yes24: Book = { title: '춘향전', author: '작자 미상', category: '한국 고전소설', description: '조선시대 고전소설', sourceType: 'yes24', isbn13: '9780000000601' };
+    const library: Book = { title: '심청전', authors: '작자 미상', classNm: '한국 고전소설', isbn13: '9780000000602' };
+    const queries: string[] = [];
+    const terms: string[] = [];
+    let evaluated: Book[] = [];
+    let evaluations = 0;
+    const recommend = createRecommendationService({
+      fetchYes24: async ({ query, pageSize }) => { queries.push(query); return pageSize === 10 ? [reference] : [reference, yes24]; },
+      fetchCandidates: async ({ keyword }) => { terms.push(keyword!); return [library]; },
+      searchTitle: async () => [reference],
+      generate: async ({ stage, prompt }) => {
+        if (stage === 'analyze') return json({ ...request, topic: referenceTitle, searchMode: 'exact', specificTitle: referenceTitle, referenceAuthor: null, needsClarification: true });
+        evaluations++;
+        evaluated = JSON.parse(prompt).candidates;
+        // 조건을 엄격하게 해석하거나 가짜 제목을 돌려주어도 실제 후보만 서버에서 선택한다.
+        return json({ ratings: [{ candidateId: 99, title: '조선의 새로운 꿈', relevanceScore: 99, topicMatch: true, difficultyMatch: true }] });
+      }
+    });
+    const result = await recommend({ userMessage: `${referenceTitle}처럼 조선시대에 만들어진 고전명작 추천해줘` });
+    assert.equal(result.request?.searchMode, 'similar');
+    assert.equal(result.request?.specificTitle, null);
+    assert.equal(result.request?.referenceBook, referenceTitle);
+    assert(!result.clarification);
+    for (const term of ['조선시대 고전', '한국 고전소설', '고전 문학']) {
+      assert(queries.includes(term)); assert(terms.includes(term));
+    }
+    assert(evaluated.some(book => book.title === yes24.title));
+    assert(evaluated.some(book => book.title === library.title));
+    assert.equal(evaluations, 1);
+    assert.deepEqual(result.books.map(book => book.title), ['춘향전', '심청전']);
+    assert(result.books.every(book => book.title !== referenceTitle && book.title !== '조선의 새로운 꿈'));
+  }
+});
+
+test('분석 모델 장애에도 임의 기준 작품과 시대 조건을 파싱하고 가장 가까운 실제 고전 추천', async () => {
+  const reference: Book = { title: '구운몽', author: '김만중', category: '한국 고전소설' };
+  const books: Book[] = [reference,
+    { title: '삼대', author: '염상섭', category: '한국 현대소설' },
+    { title: '춘향전', author: '작자 미상', category: '한국 고전소설' }
+  ];
+  const recommend = createRecommendationService({ generate: async () => { throw Error('503'); },
+    fetchYes24: async () => books, searchTitle: async () => [reference], fetchCandidates: async () => [] });
+  const result = await recommend({ userMessage: '구운몽처럼 조선시대에 만들어진 고전명작 추천해줘' });
+  assert.equal(result.request?.referenceBook, '구운몽');
+  assert.equal(result.books[0]?.title, '춘향전');
+  assert(result.books.every(book => book.title !== '구운몽'));
+});
+
+test('모델 장애 시 기준 작품의 실제 분류로 분야를 복원하고 소개 속 우주 단어에 문학을 오분류하지 않음', async () => {
+  for (const [title, author, category, expectedKdc] of [
+    ['날개', '이상', '한국 소설', '8'], ['코스모스', '칼 세이건', '자연과학 > 천문학', '4']
+  ]) {
+    const reference: Book = { title: title!, author: author!, category, description: '작가의 우주와 과학에 관한 시선' };
+    const recommend = createRecommendationService({ generate: async () => { throw Error('503'); },
+      fetchYes24: async () => [reference], searchTitle: async () => [reference], fetchCandidates: async () => [] });
+    const result = await recommend({ userMessage: `${title} 같은 책 추천해줘` });
+    assert.equal(result.request?.kdc, expectedKdc);
+  }
+});

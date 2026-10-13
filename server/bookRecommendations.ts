@@ -164,6 +164,8 @@ export function isReferenceBook(book: Book, referenceBook: string, referenceAuth
   if (!normRef) return false;
   const normBase = normalize(getBaseTitle(book.title));
   if (normBase === normRef) return true;
+  // 부제나 묶음 제목에 기준 작품이 포함된 판본도 유사 작품 후보에서 제외한다.
+  if (normalize(book.title).includes(normRef)) return true;
   if (normBase.includes(normRef)) {
     if (referenceAuthor && (hasText(book.author || book.authors, referenceAuthor) || normBase.includes(normalize(referenceAuthor)))) {
       return true;
@@ -207,17 +209,49 @@ function isIndividualLiteraryWork(book: Book): boolean {
   return knownKoreanWork(book) || /한국\s*(?:근대\s*|현대\s*)?소설|한국\s*(?:장편|단편)\s*소설/u.test(identity);
 }
 
+function explicitSimilarity(userMessage: string): { title: string; author: string | null; condition: string } | null {
+  const match = userMessage.match(/^\s*(.+?)\s*(?:처럼|같은|같이)\s*(.*)$/u);
+  if (!match) return null;
+  const prefix = match[1]!.replace(/[『』「」“”"']/gu, '').trim();
+  const authored = prefix.match(/^(.+?)의\s+(.+)$/u);
+  const title = (authored?.[2] || prefix).trim();
+  if (!title || title.length > 80) return null;
+  return { title, author: authored?.[1]?.trim() || null, condition: match[2]!.trim() };
+}
+
+function classicSearchTerms(request: RecommendationRequest): string[] {
+  if (request.searchMode !== 'similar') return [];
+  const condition = [request.topic, request.similarityFocus, ...request.keywords].join(' ');
+  return /조선|한국\s*고전|고전\s*소설/u.test(condition)
+    ? ['조선시대 고전', '한국 고전소설', '고전 문학', '고전소설'] : [];
+}
+
 function localRequest(userMessage: string, grade: string): RecommendationRequest | null {
-  if (!/(같은|처럼|비슷)/u.test(userMessage)) return null;
-  const literary = /날개/u.test(userMessage);
-  const space = /코스모스/u.test(userMessage);
-  if (!literary && !space) return null;
-  return { topic: literary ? '한국 근대 소설' : '우주/천문학', difficulty: '미지정', grade,
-    intent: '도서 추천', keywords: literary ? ['한국 소설', '한국 문학'] : ['우주', '천문학'],
+  const similar = explicitSimilarity(userMessage);
+  if (!similar) {
+    const exact = userMessage.match(/^\s*(.+?)\s*(?:찾아\s*줘|찾아주세요|있어[?？]?)\s*$/u);
+    if (!exact) return null;
+    const title = exact[1]!.replace(/[『』「」“”"']/gu, '').trim();
+    return { topic: title, difficulty: '미지정', grade, intent: '도서 추천', keywords: [title],
+      specificTitle: title, searchMode: 'exact', author: null, referenceBook: null, referenceAuthor: null,
+      similarityFocus: null, needsClarification: false, kdc: '' };
+  }
+  const classic = /조선|한국\s*고전|고전\s*소설/u.test(similar.condition);
+  const science = /우주|천문|과학/u.test(similar.condition);
+  return { topic: classic ? '한국 고전소설' : science ? '우주/천문학' : '한국 소설', difficulty: '미지정', grade,
+    intent: '도서 추천', keywords: classic ? ['조선시대 고전', '한국 고전소설', '고전 문학'] : science ? ['우주', '천문학'] : ['한국 소설', '한국 문학'],
     specificTitle: null, searchMode: 'similar', author: null,
-    referenceBook: literary ? '날개' : '코스모스', referenceAuthor: literary ? '이상' : '칼 세이건',
-    similarityFocus: literary ? '문체·작품성' : '전반적인 주제와 분위기', needsClarification: false,
-    kdc: literary ? '8' : '4' };
+    referenceBook: similar.title, referenceAuthor: similar.author,
+    similarityFocus: similar.condition || '전반적인 주제와 분위기', needsClarification: false,
+    kdc: science ? '4' : '8' };
+}
+
+function isClassicLiteraryCandidate(book: Book): boolean {
+  const metadata = [book.title, book.category, book.classNm, book.description].filter(Boolean).join(' ');
+  if (/연구|비평|평전|작가론|논술|문제집|만화|초등|문학사|소설사|소설론|시학|양식론|형성|문체|시가|국경|편지|강의|이론|논문|개론|문학의|소설의|고전의|주해|사전|주석|출판본|번역본/u.test(book.title)) return false;
+  if (/역사|사회과학|총류|인문|대학교재/u.test(book.category || book.classNm || '')) return false;
+  if (/조선왕조실록|어떻게.*살았/u.test(book.title)) return false;
+  return /고전|조선|한국.*소설|한국.*문학|소설\/시\/희곡/u.test(metadata);
 }
 
 function serverCandidateRating(book: Book, candidateId: number, request: RecommendationRequest, individualLiterature: boolean): CandidateRating {
@@ -229,8 +263,14 @@ function serverCandidateRating(book: Book, candidateId: number, request: Recomme
   const domainPenalty = request.kdc === '4' && /예술|미술|소설|시\/희곡/u.test(category) ? 25 : 0;
   const titleBonus = terms.some(term => normalize(book.title).includes(term)) ? 8 : 0;
   const childrenPenalty = request.kdc === '4' && /어린이|초등/u.test(category) ? 5 : 0;
+  const classic = classicSearchTerms(request).length > 0;
+  const classicScore = 75 + (/고전/u.test(metadata) ? 8 : 0) + (/조선/u.test(metadata) ? 10 : 0)
+    + (/고전소설/u.test(metadata) ? 5 : 0) + (/한국/u.test(metadata) ? 3 : 0)
+    - (/근대|현대/u.test([book.title, category].join(' ')) ? 15 : 0)
+    - (/어린이|초등/u.test(category) ? 25 : 0) - (isCollectionLike(book) ? 3 : 0);
   const score = request.searchMode === 'exact' && matchesRequestedTitle(book.title, request) ? 95
     : request.searchMode === 'author' && request.author && hasText(book.author || book.authors, request.author) ? 90
+    : classic && isClassicLiteraryCandidate(book) ? Math.min(98, classicScore)
     : individualLiterature && knownKoreanWork(book) ? 92
     : Math.min(95, 65 + matches * 12 + titleBonus + domainBonus - domainPenalty - childrenPenalty);
   const difficultyMatch = request.difficulty !== '높음' || individualLiterature
@@ -542,8 +582,8 @@ const ANALYSIS_SYSTEM = `사용자의 도서 요청을 구조화하는 분석기
 {"topic":"구체적 주제 또는 미지정", "difficulty":"쉬움|보통|높음|미지정", "grade":"중1|중2|중3", "intent":"도서 추천", "keywords":["핵심 검색어"], "specificTitle":null, "searchMode":"topic|exact|similar|author|broad", "author":null, "referenceBook":null, "referenceAuthor":null, "similarityFocus":null, "needsClarification":false, "clarifyingQuestion":null, "clarificationOptions":[], "kdc":"4"}
 특정 제목을 찾아줘/있어? 는 exact로 제목을 원문 그대로 specificTitle에 보존한다. 가짜/모르는 제목도 수정하거나 실존 제목으로 바꾸지 않는다.
 '코스모스 같은 책'은 similar이며 referenceBook은 코스모스, topic은 우주/천문학이다. 유사 기준을 따로 묻지 말고 전반적인 주제와 분위기로 바로 추천한다. specificTitle은 null이다.
-'이상의 날개처럼 깊고 수준 높은 고전 명작'은 similar, referenceBook은 날개, referenceAuthor는 이상, similarityFocus는 문체·작품성/난이도다. 날개 자체를 찾는 exact로 분류하면 안 된다.
-'이상의 날개같은 고전명작 책 찾아줘'도 같은 similar 요청이다. referenceBook은 날개, referenceAuthor는 이상, topic은 한국 근대 문학, specificTitle은 null이다.
+'{기준 작품}처럼/같은 + 시대·장르·주제 조건'은 항상 similar다. referenceBook은 입력의 기준 작품 제목, specificTitle은 null이다. 시대/장르/주제 조건을 topic, keywords, similarityFocus에 보존하고 바로 검색한다.
+예: '구운몽처럼 조선시대에 만들어진 고전명작'은 referenceBook=구운몽, topic=조선시대 한국 고전소설, keywords=['조선시대 고전','한국 고전소설','고전 문학'], kdc=8이다. 출판 연도가 아닌 작품이 만들어진 시대를 뜻한다.
 '파인만 물리학 책'처럼 저자의 분야별 저서를 찾으면 author 모드, author는 파인만, specificTitle은 null이다.
 '이상 작품 추천', '김영하 책 추천'은 author 모드다.
 '재밌는 책 추천', '좋은 책 알려줘'처럼 결과가 크게 달라질 만큼 조건이 넓으면 broad이고 needsClarification=true다. 질문은 '어떤 분야의 책을 읽고 싶으세요?', 선택지는 ['소설','과학','역사','사회']다.
@@ -561,6 +601,7 @@ const EVALUATION_SYSTEM = `도서 추천의 관련성 검증자다. 제공된 �
 - 요청 분야(문학, 과학, 역사 등) 또는 요청 작가와 일치해야 한다.
 - similar/author 모드에서는 해당 분야/작가의 대표작, 명작, 단편선, 다양한 시리즈를 폭넓게 인정한다.
 - similar 모드에서 특정 작품과 비슷한 책을 찾을 때는 개별 작품을 우선 평가하고, 선집·전집·작품집·모음집은 개별 작품 후보가 부족할 때만 보충 후보로 평가한다.
+- 시대/장르 조건의 완전 일치가 없어도 같은 분야의 가장 가까운 실제 작품을 점수 순으로 평가한다. 기준 작품 자체와 그 판본은 제외한다. 조선시대 고전 요청에서는 한국 고전소설을 근현대 소설보다 우선한다. 정보에 없는 창작 연도를 추측하지 않는다.
 2. 난이도 부합(difficultyMatch):
 - 유아/초등 저학년용 만화나 너무 쉬운 입문서가 아니면 difficultyMatch=true이다.
 - 제목이나 분야(classNm)로 수준과 대표성이 명확한 경우 적극적으로 80~95점의 점수를 부여한다.
@@ -650,6 +691,20 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
         parsed = fallbackRequest;
         trace.failures.push('model_analysis_unavailable');
       }
+      const explicit = explicitSimilarity(userMessage);
+      if (explicit) {
+        parsed.searchMode = 'similar';
+        parsed.specificTitle = null;
+        parsed.referenceBook = explicit.title;
+        parsed.referenceAuthor = explicit.author || parsed.referenceAuthor;
+        parsed.similarityFocus = explicit.condition || parsed.similarityFocus || '전반적인 주제와 분위기';
+        parsed.needsClarification = false;
+        if (/조선|한국\s*고전|고전\s*소설/u.test(explicit.condition)) {
+          parsed.topic = /조선/u.test(explicit.condition) ? '조선시대 한국 고전소설' : '한국 고전소설';
+          parsed.keywords = ['조선시대 고전', '한국 고전소설', '고전 문학'];
+          parsed.kdc = '8';
+        }
+      }
       const topic = textValue(parsed.topic);
       const parsedMode = textValue(parsed.searchMode);
       if (!topic || !parsedMode || !['topic', 'exact', 'similar', 'author', 'broad'].includes(parsedMode)) throw new Error('Invalid request analysis');
@@ -686,6 +741,17 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
         onEvent({ stage: 'reference_validation', referenceBook: request.referenceBook,
           candidateCount: referenceCandidates.length, verified: referenceVerified });
 
+        if (referenceVerified && trace.failures.includes('model_analysis_unavailable') && !classicSearchTerms(request).length) {
+          const metadata = referenceCandidates.filter(book => normalize(getBaseTitle(book.title)) === normalize(request!.referenceBook)
+            && (!request!.referenceAuthor || hasText(book.author || book.authors, request!.referenceAuthor)))
+            .map(book => [book.category, book.classNm].filter(Boolean).join(' ')).join(' ');
+          if (/우주|천문|자연과학/u.test(metadata)) {
+            request.topic = '우주/천문학';
+            request.keywords = ['우주', '천문학'];
+            request.kdc = '4';
+          }
+        }
+
         if (!referenceVerified) {
           const notFoundMessage = `『${request.referenceBook}』는 실제 도서 검색에서 확인되지 않았어요.\n책 제목을 다시 확인하거나, 찾고 싶은 책의 주제나 분위기를 알려주세요.`;
           const asksToInvent = /(?:만들|지어|없는책|없는책이어도|검색에없어도|실제로없어도|존재하지않아도)/u.test(normalize(userMessage));
@@ -715,6 +781,7 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
     }
 
     if (!request) return result([]);
+    const classicTerms = classicSearchTerms(request);
     const individualLiterature = request.searchMode === 'similar' && request.kdc === '8' && /고전|명작/u.test(userMessage);
 
     const addCandidates = (target: Book[], seen: Set<string>, list: Book[]): void => {
@@ -730,7 +797,7 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
 
     const evaluateCandidates = async (candidates: Book[]): Promise<RecommendedBook[]> => {
       if (!candidates.length) return [];
-      const rankedCandidates = candidates.filter(book => !individualLiterature || isIndividualLiteraryWork(book))
+      const rankedCandidates = candidates.filter(book => classicTerms.length ? isClassicLiteraryCandidate(book) : !individualLiterature || isIndividualLiteraryWork(book))
         .sort((a, b) => serverCandidateRating(b, 0, request, individualLiterature).relevanceScore
           - serverCandidateRating(a, 0, request, individualLiterature).relevanceScore).slice(0, 12);
       if (!rankedCandidates.length) return [];
@@ -751,7 +818,8 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
         } catch {
           return fallback();
         }
-        return selectLibraryBooks(rankedCandidates, assessment, request, excludedTitles);
+        const selected = selectLibraryBooks(rankedCandidates, assessment, request, excludedTitles);
+        return selected.length || !classicTerms.length ? selected : fallback();
       } catch {
         return fallback();
       }
@@ -761,6 +829,7 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
       const selectedKeys = new Set(selected.map(book => book.isbn13 || normalize(getBaseTitle(book.title))));
       const seen = new Set<string>();
       moreBooks = candidates
+        .filter(book => !classicTerms.length || isClassicLiteraryCandidate(book))
         .filter(book => !request!.referenceBook || !isReferenceBook(book, request!.referenceBook, request!.referenceAuthor))
         .map((book, candidateId) => ({ book, rating: serverCandidateRating(book, candidateId, request!, individualLiterature) }))
         .sort((a, b) => b.rating.relevanceScore - a.rating.relevanceScore)
@@ -782,7 +851,8 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
         request.searchMode === 'author' && request.author ? `${request.author} 소설` : null,
         request.searchMode === 'author' && request.author ? `${request.author} 대표작` : null,
         request.searchMode === 'author' && request.author ? request.author : null,
-        ...(individualLiterature ? KOREAN_WORK_SEARCH_HINTS.slice(0, 3).map(work => `${work.author} ${work.title}`) : []),
+        ...classicTerms,
+        ...(individualLiterature && !classicTerms.length ? KOREAN_WORK_SEARCH_HINTS.slice(0, 3).map(work => `${work.author} ${work.title}`) : []),
         request.searchMode === 'similar' && !individualLiterature && request.referenceBook ? `${request.referenceAuthor || ''} ${request.referenceBook} ${request.topic}`.trim() : null,
         request.searchMode === 'similar' && request.kdc === '8' ? `${request.topic} 단편소설 개별 작품` : null,
         request.keywords?.[0] ? `${request.keywords[0]} ${request.topic}`.trim() : null,
@@ -795,6 +865,23 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
         addCandidates(yes24Candidates, yes24Seen, books);
       }
 
+      if (classicTerms.length) {
+        trace.libraryAttempted = true;
+        const libraryResults = await Promise.all(classicTerms.map(keyword =>
+          fetchCandidates({ kdc: request!.kdc, keyword, pageSize: 25 }).catch(() => [])));
+        for (const books of libraryResults) addCandidates(yes24Candidates, yes24Seen, books);
+      }
+      if (classicTerms.length) {
+        // 실제 API의 작품 묶음 부제에서 개별 작품명을 얻어 판본을 추가 검색한다.
+        const workTitles = [...new Set(yes24Candidates.filter(isClassicLiteraryCandidate).flatMap(book => {
+          const subtitle = book.title.match(/고전소설\s*\d*\s*[:：]\s*(.+)/u)?.[1];
+          return subtitle ? subtitle.split(/[,，/·]/u).map(title => title.trim())
+            .filter(title => /^[가-힣\s]{2,20}$/u.test(title) && !isReferenceBook({ title }, request!.referenceBook!)) : [];
+        }))].slice(0, 4);
+        const editions = await Promise.all(workTitles.map(query => fetchYes24({ query, pageSize: 10 }).catch(() => [])));
+        editions.forEach((books, index) => addCandidates(yes24Candidates, yes24Seen,
+          books.filter(book => normalize(getBaseTitle(book.title)) === normalize(workTitles[index]))));
+      }
       const matchingYes24 = yes24Candidates.filter(book => matchesRequestedTitle(book.title, request));
       trace.libraryCandidateCount += matchingYes24.length;
       onEvent({ stage: 'yes24', candidateCount: matchingYes24.length, searchMode: request.searchMode });
@@ -821,7 +908,8 @@ export function createRecommendationService({ generate, fetchCandidates, searchT
       } else {
         const searchTerms = [...new Set([
           request.searchMode === 'author' && request.author ? request.author : null,
-          ...(individualLiterature ? KOREAN_WORK_SEARCH_HINTS.slice(0, 3).map(work => work.title) : []),
+          ...classicTerms,
+          ...(individualLiterature && !classicTerms.length ? KOREAN_WORK_SEARCH_HINTS.slice(0, 3).map(work => work.title) : []),
           request.searchMode === 'similar' && !individualLiterature && request.kdc === '8' ? '한국단편소설' : null,
           request.searchMode === 'similar' && !individualLiterature && request.referenceBook ? `${request.referenceAuthor || ''} ${request.referenceBook}`.trim() : null,
           request.specificTitle ? `${request.author || ''} ${request.specificTitle}`.trim() : null,
