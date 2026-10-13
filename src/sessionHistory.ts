@@ -1,4 +1,4 @@
-import type { ComprehensionCheck, MessageImage, RecommendedBook } from './types/index.ts';
+import type { ComprehensionCheck, GazeReport, MessageImage, RecommendedBook } from './types/index.ts';
 import { accountGet, accountSet, getAccountId } from './accountStorage.ts';
 
 export const HISTORY_KEY = 'pageon-saved-sessions';
@@ -20,6 +20,7 @@ export interface SessionSnapshot {
     comprehensionChecks?: ComprehensionCheck[];
     difficultPoints?: string[];
     understoodPoints?: string[];
+    gazeReports?: GazeReport[];
   };
   chatHistory?: SnapshotMessage[];
   recommendedBooks?: Array<Pick<RecommendedBook, 'title' | 'author' | 'reason'>>;
@@ -49,7 +50,7 @@ export function saveSessionSnapshot(kind: SessionKind, snapshot: object, storage
   const session = value.session || {};
   const hasContent = kind === 'reading'
     ? Boolean(value.book?.title || session.recentMessages?.length || session.summary || session.readingNote ||
-        session.comprehensionChecks?.length || session.difficultPoints?.length || session.understoodPoints?.length)
+        session.comprehensionChecks?.length || session.difficultPoints?.length || session.understoodPoints?.length || session.gazeReports?.length)
     : Boolean(value.chatHistory?.length || value.recommendedBooks?.length || value.currentDocument);
   if (!hasContent) return null;
   const record = {

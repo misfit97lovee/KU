@@ -141,6 +141,17 @@ export interface TaoLog {
   timestamp: number;
 }
 
+export interface GazeReport {
+  id: string;
+  createdAt: number;
+  durationSec: number;
+  focusPercent: number;
+  hotspots: Array<{ position: string; dwellSec: number; revisits: number }>;
+  /** JPEG preview includes the book photo, never the webcam video. */
+  snapshot: string;
+  source: 'webcam' | 'mouse';
+}
+
 export interface ReadingState {
   student: { grade: Grade | null };
   book: { title: string };
@@ -154,6 +165,7 @@ export interface ReadingState {
     suggestedQuestions: string[];
     isQuizActive: boolean;
     sourceText?: string;
+    gazeReports?: GazeReport[];
   };
   taoLogs: TaoLog[];
 }

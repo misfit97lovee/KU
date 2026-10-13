@@ -1,14 +1,19 @@
-import type { MessageImage } from '../types/index.ts';
+import type { GazeReport, MessageImage } from '../types/index.ts';
+import '../gaze.css';
 import { openCameraModal } from './CameraModal.ts';
-import { getAccountRevision } from '../accountStorage.ts';
+import { getAccountRevision, subscribeAccount } from '../accountStorage.ts';
+
+let closeActiveGaze: (() => void) | null = null;
+subscribeAccount(() => { closeActiveGaze?.(); closeActiveGaze = null; });
 
 interface BookInputOptions {
   bookTitle?: string;
   onSendToChat: (text: string) => void;
   onSendImage: (payload: { text: string; image: MessageImage; previewUrl: string | null }) => void;
+  onGazeReport?: (report: Omit<GazeReport, 'id' | 'createdAt'>) => void;
 }
 
-export function renderBookInputPanel(container: HTMLElement, { bookTitle = '', onSendToChat, onSendImage }: BookInputOptions): void {
+export function renderBookInputPanel(container: HTMLElement, { bookTitle = '', onSendToChat, onSendImage, onGazeReport }: BookInputOptions): void {
   const revision = getAccountRevision();
   let activeTab: 'image' | 'direct' = 'image'; // 우선순위 1이므로 기본 탭을 '책 사진 올리기'로 설정
   let selectedFile: File | null = null;
@@ -77,6 +82,18 @@ export function renderBookInputPanel(container: HTMLElement, { bookTitle = '', o
     const dropZone = container.querySelector<HTMLElement>('#photo-dropzone');
     const removeBtn = container.querySelector('#btn-remove-photo');
     const submitImageBtn = container.querySelector('#btn-submit-book-photo');
+    container.querySelector('#btn-gaze-read')?.addEventListener('click', async () => {
+      if (!previewUrl) return;
+      const imageUrl = previewUrl;
+      const { openGazeReader } = await import('./GazeReaderModal.ts');
+      if (revision !== getAccountRevision() || imageUrl !== previewUrl) return;
+      activeCameraCleanup?.();
+      closeActiveGaze?.();
+      closeActiveGaze = openGazeReader({ imageUrl,
+        onAskAbout: payload => { if (revision === getAccountRevision()) onSendImage(payload); },
+        onReport: report => { if (revision === getAccountRevision()) onGazeReport?.(report); }
+      });
+    });
 
     if (openCameraBtn) {
       openCameraBtn.addEventListener('click', () => {
@@ -262,6 +279,7 @@ function renderImageTab(selectedFile: File | null, previewUrl: string | null): s
       >
         이 부분 물어보기
       </button>
+      ${previewUrl ? '<button type="button" id="btn-gaze-read" class="gz-entry">시선으로 읽기</button>' : ''}
     </div>
   `;
 }

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ko"><meta charset="utf-8"><title>KU 아이트래킹 통합 검증</title>
+<body><h1>아이트래킹 통합 검증 (개발 전용)</h1>
+<p>개인정보 없는 합성 책 사진과 테스트 계정만 사용합니다.</p>
+<button id="prepare">테스트 사진 준비</button>
+<button id="account-a">테스트 계정 A</button><button id="account-b">테스트 계정 B</button>
+<button id="logout">테스트 로그아웃</button><button id="archive">새 세션으로 보관</button>
+<button id="history">저장기록</button>
+<button id="stare" style="position:fixed;right:8px;bottom:8px;z-index:2002">테스트 가운데 체류</button>
+<p id="status" role="status"></p><p id="camera-status" role="status">테스트 카메라: 미시작</p><div id="book"></div><div id="record"></div>
+<script type="module">
+import '../src/style.css';
+import { renderBookInputPanel } from '../src/components/BookInputPanel.ts';
+import { renderReadingRecordPanel } from '../src/components/ReadingRecordPanel.ts';
+import { openHistoryDialog } from '../src/components/HistoryDialog.ts';
+import { stateManager } from '../src/state.ts';
+import { setAccount, getAccountId } from '../src/accountStorage.ts';
+const status = document.getElementById('status');
+let question = '';
+let tracks = [];
+new MutationObserver(() => {
+  const video = document.querySelector('video');
+  if (video?.srcObject) tracks = video.srcObject.getTracks();
+}).observe(document.body,{childList:true,subtree:true});
+setInterval(() => {
+  document.getElementById('camera-status').textContent = `테스트 카메라: ${tracks.map(track=>track.readyState).join(', ') || '미시작'}`;
+},500);
+function render() {
+  status.textContent = `현재 계정: ${getAccountId() || '로그아웃'} · 기록: ${stateManager.state.session.gazeReports?.length || 0} · ${question}`;
+  renderBookInputPanel(document.getElementById('book'), {
+    onSendToChat: text => { question = text; render(); },
+    onSendImage: payload => {
+      question = `질문 연결 성공 · ${payload.image.mimeType} · 이미지 ${payload.image.data.length}자`;
+      render();
+    },
+    onGazeReport: report => stateManager.addGazeReport(report)
+  });
+  renderReadingRecordPanel(document.getElementById('record'), {
+    state: stateManager.state, isSummaryLoading: false, isReadingNoteLoading: false
+  });
+}
+stateManager.subscribe(render);
+document.getElementById('account-a').onclick = () => { setAccount('gaze-test-A'); sessionStorage.setItem('gaze-test-account','gaze-test-A'); };
+document.getElementById('account-b').onclick = () => { setAccount('gaze-test-B'); sessionStorage.setItem('gaze-test-account','gaze-test-B'); };
+document.getElementById('logout').onclick = () => { setAccount(null); sessionStorage.removeItem('gaze-test-account'); };
+document.getElementById('archive').onclick = () => stateManager.resetSession();
+document.getElementById('history').onclick = openHistoryDialog;
+document.getElementById('stare').onclick = () => {
+  const image = document.getElementById('gz-img');
+  if (!image) return;
+  const rect = image.getBoundingClientRect();
+  window.dispatchEvent(new MouseEvent('mousemove',{clientX:rect.left+rect.width/2,clientY:rect.top+rect.height/2}));
+};
+document.getElementById('prepare').onclick = () => {
+  const canvas = document.createElement('canvas'); canvas.width=400; canvas.height=560;
+  const context = canvas.getContext('2d'); context.fillStyle='#faf8f0'; context.fillRect(0,0,400,560);
+  context.fillStyle='#333'; context.font='18px sans-serif';
+  context.fillText('개인정보 없는 독서 테스트 사진',35,45);
+  for (let y=80; y<500; y+=28) context.fillText('함께 읽으며 어려운 문장을 살펴봅니다.',25,y);
+  canvas.toBlob(blob => {
+    const transfer = new DataTransfer(); transfer.items.add(new File([blob], 'test-page.png', {type:'image/png'}));
+    const input = document.getElementById('book-photo-input'); input.files = transfer.files;
+    input.dispatchEvent(new Event('change',{bubbles:true}));
+  },'image/png');
+};
+setAccount(sessionStorage.getItem('gaze-test-account') || 'gaze-test-A');
+render();
+</script></body></html>

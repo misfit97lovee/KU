@@ -1,4 +1,5 @@
 import { formatText } from '../formatText.ts';
+import { renderGazeReports } from '../gaze/renderReport.ts';
 import type { ReadingState } from '../types/index.ts';
 
 type RecordTab = 'summary' | 'reading-note' | 'map';
@@ -55,7 +56,7 @@ export function renderReadingRecordPanel(container: HTMLElement, {
 
         ${activeTab === 'summary' ? renderSummaryTab(state.session.summary, isSummaryLoading) : ''}
         ${activeTab === 'reading-note' ? renderReadingNoteTab(state.session.readingNote, isReadingNoteLoading) : ''}
-        ${activeTab === 'map' ? renderUnderstandingMapTab(state.session) : ''}
+        ${activeTab === 'map' ? renderGazeReports(state.session.gazeReports) + renderUnderstandingMapTab(state.session) : ''}
       </div>
     `;
 

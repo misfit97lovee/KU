@@ -1,6 +1,6 @@
 import { saveSessionSnapshot } from './sessionHistory.ts';
 import { accountGet, accountSet, subscribeAccount } from './accountStorage.ts';
-import type { ComprehensionCheck, Grade, MessageImage, ReadingMessage, ReadingState, TaoLog } from './types/index.ts';
+import type { ComprehensionCheck, GazeReport, Grade, MessageImage, ReadingMessage, ReadingState, TaoLog } from './types/index.ts';
 
 /**
  * READING_AGENT_SPEC.md 기반 상태 관리 및 영속화
@@ -61,6 +61,7 @@ class StateManager {
         isQuizActive?: boolean;
         taoLogs?: TaoLog[];
         sourceText?: string;
+        gazeReports?: GazeReport[];
       };
 
       return {
@@ -79,7 +80,8 @@ class StateManager {
           comprehensionChecks: session.comprehensionChecks || [],
           suggestedQuestions: session.suggestedQuestions || [],
           isQuizActive: Boolean(session.isQuizActive),
-          sourceText: session.sourceText || ''
+          sourceText: session.sourceText || '',
+          gazeReports: session.gazeReports || []
         },
         taoLogs: session.taoLogs || []
       };
@@ -106,7 +108,8 @@ class StateManager {
         suggestedQuestions: this.state.session.suggestedQuestions,
         isQuizActive: Boolean(this.state.session.isQuizActive),
         taoLogs: this.state.taoLogs,
-        sourceText: this.state.session.sourceText || ''
+        sourceText: this.state.session.sourceText || '',
+        gazeReports: this.state.session.gazeReports || []
       }));
     } catch (e) {
       console.error('로컬스토리지 저장 실패:', e);
@@ -166,6 +169,12 @@ class StateManager {
 
   setSourceText(text: string): void {
     this.state.session.sourceText = text;
+    this.notify();
+  }
+
+  addGazeReport(report: Omit<GazeReport, 'id' | 'createdAt'>): void {
+    this.state.session.gazeReports = [{ ...report, id: crypto.randomUUID(), createdAt: Date.now() },
+      ...(this.state.session.gazeReports || [])].slice(0, 3);
     this.notify();
   }
 

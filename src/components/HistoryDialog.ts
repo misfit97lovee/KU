@@ -3,6 +3,8 @@ import type { SavedSession } from '../sessionHistory.ts';
 import { formatText } from '../formatText.ts';
 import { getUnderstandingData } from './ReadingRecordPanel.ts';
 import { subscribeAccount } from '../accountStorage.ts';
+import { renderGazeReports } from '../gaze/renderReport.ts';
+import '../gaze.css';
 
 subscribeAccount(() => document.getElementById('history-dialog-overlay')?.remove());
 
@@ -71,7 +73,7 @@ function renderRecord(record: SavedSession, tab: string): string {
   if (tab === 'map') {
     const groups = getUnderstandingData(session);
     const sections: Array<[keyof typeof groups, string]> = [['difficult','어려움'],['almost','조금 더 보기'],['understood','이해함']];
-    return sections.map(([key,label]) => `<section class="history-status"><h4><span class="history-dot ${key}"></span>${label}</h4>${groups[key].length ? `<ul>${groups[key].map(topic => `<li>${escape(topic)}</li>`).join('')}</ul>` : '<p>저장된 항목이 없어요.</p>'}</section>`).join('');
+    return renderGazeReports(session.gazeReports) + sections.map(([key,label]) => `<section class="history-status"><h4><span class="history-dot ${key}"></span>${label}</h4>${groups[key].length ? `<ul>${groups[key].map(topic => `<li>${escape(topic)}</li>`).join('')}</ul>` : '<p>저장된 항목이 없어요.</p>'}</section>`).join('');
   }
   return empty;
 }
