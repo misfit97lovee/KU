@@ -279,7 +279,15 @@ function renderImageTab(selectedFile: File | null, previewUrl: string | null): s
       >
         이 부분 물어보기
       </button>
-      ${previewUrl ? '<button type="button" id="btn-gaze-read" class="gz-entry">시선으로 읽기</button>' : ''}
+      <button
+        type="button"
+        id="btn-gaze-read"
+        class="gz-entry"
+        ${!previewUrl ? 'disabled aria-disabled="true" style="opacity: 0.55; cursor: not-allowed;"' : ''}
+      >
+        <span>시선으로 읽기</span>
+        <small>${previewUrl ? '카메라로 읽는 위치를 기록해요' : '책 페이지 사진을 올리면 시작할 수 있어요'}</small>
+      </button>
     </div>
   `;
 }
