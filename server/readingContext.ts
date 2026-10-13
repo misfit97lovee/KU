@@ -1,4 +1,4 @@
-import type { Grade, ComprehensionCheck } from '../src/types/index.ts';
+import type { Grade, ComprehensionCheck, ReadingLevel } from '../src/types/index.ts';
 
 const text = (value: unknown, limit: number): string => typeof value === 'string' ? value.slice(0, limit) : '';
 const list = (value: unknown): string[] => Array.isArray(value) ? value.slice(-3).map(item => text(item, 200)).filter(Boolean) : [];
@@ -10,7 +10,10 @@ export function compactReadingBody(body: Record<string, any>) {
       .filter((message: any) => typeof message?.content === 'string')
       .map((message: any) => ({ role: message.role === 'assistant' ? 'assistant' : 'user', content: text(message.content, 4000) })) : [],
     readingState: {
-      student: { grade: (['중1', '중2', '중3'].includes(state.student?.grade) ? state.student.grade : null) as Grade | null },
+      student: {
+        grade: (['중1', '중2', '중3'].includes(state.student?.grade) ? state.student.grade : null) as Grade | null,
+        readingLevel: (['입문', '중급', '심화'].includes(state.student?.readingLevel) ? state.student.readingLevel : '중급') as ReadingLevel
+      },
       book: { title: text(state.book?.title, 200) },
       session: {
         difficultPoints: list(state.session?.difficultPoints),

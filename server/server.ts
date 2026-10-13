@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { createAuthRouter } from './auth.ts';
+import { ReadingDatabase, createDatabaseRouter } from './database.ts';
 import { callReadingGemini } from './readingGemini.ts';
 import { compactReadingBody, readingMemory } from './readingContext.ts';
 import { buildSystemPrompt, buildSummaryPrompt, buildReadingNotePrompt } from './prompts.ts';
@@ -83,7 +84,9 @@ export function sanitizeError(error: unknown): string {
 // 미들웨어 설정 (이미지 Base64 처리를 위해 20MB로 넉넉하게 설정)
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
-app.use('/api/auth', createAuthRouter({ clientId: process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '' }));
+const authRouter = createAuthRouter({ clientId: process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '' });
+app.use('/api/auth', authRouter);
+app.use('/api/db', createDatabaseRouter(new ReadingDatabase(process.env.SUPABASE_URL || '', process.env.SUPABASE_SECRET_KEY || ''), authRouter.resolveUser));
 
 // 헬스체크 엔드포인트
 app.get('/api/health', (req, res) => {

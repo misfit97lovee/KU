@@ -131,5 +131,10 @@ export function createAuthRouter(options: {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ user: null });
   });
-  return router;
+  return Object.assign(router, {
+    async resolveUser(req: Request): Promise<AuthUser | null> {
+      await ready;
+      return currentUser(req);
+    }
+  });
 }

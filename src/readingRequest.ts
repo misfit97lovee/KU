@@ -13,7 +13,7 @@ export function buildReadingRequest(state: ReadingState, explanationLevel?: stri
     sourceText: (state.session.sourceText || older.filter(message => message.role === 'user')
       .slice(-3).map(message => message.content).join('\n')).slice(0, 6000),
     readingState: {
-      student: state.student,
+      student: { grade: state.student.grade, readingLevel: state.student.readingLevel || '중급' },
       book: state.book,
       session: {
         difficultPoints: state.session.difficultPoints.slice(-3),

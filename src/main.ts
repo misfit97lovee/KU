@@ -2,7 +2,7 @@ import { stateManager } from './state.ts';
 import { accountFetch, getAccountId, subscribeAccount } from './accountStorage.ts';
 import { buildReadingRequest } from './readingRequest.ts';
 import { renderHeader } from './components/Header.ts';
-import { renderOnboardingModal } from './components/OnboardingModal.ts';
+import { renderOnboardingModal, renderReadingLevelModal } from './components/OnboardingModal.ts';
 import { renderBookInputPanel } from './components/BookInputPanel.ts';
 import { renderChatPanel } from './components/ChatPanel.ts';
 import { renderReadingRecordPanel } from './components/ReadingRecordPanel.ts';
@@ -12,6 +12,7 @@ let isLoading = false;
 let isSummaryLoading = false;
 let isReadingNoteLoading = false;
 let isModalOpen = false;
+let isReadingLevelModalOpen = false;
 let initialTitleHandled = false;
 
 // DOM 엘리먼트 캐시
@@ -51,6 +52,7 @@ function renderApp(): void {
   renderHeader(headerEl, state, {
     isBusy: isLoading || isSummaryLoading || isReadingNoteLoading,
     onOpenGradeModal: () => {
+      isReadingLevelModalOpen = false;
       isModalOpen = true;
       renderApp();
     },
@@ -114,12 +116,24 @@ function renderApp(): void {
   });
 
   // 5. 온보딩 모달 (학년 미설정 또는 사용자가 직접 열었을 때)
-  if (!state.student.grade || isModalOpen) {
+  if (state.student.grade && (isReadingLevelModalOpen || (!isModalOpen && !state.student.readingLevelSelected))) {
+    const finishLevel = (level: '입문' | '중급' | '심화') => {
+      isReadingLevelModalOpen = false;
+      isModalOpen = false;
+      stateManager.setReadingLevel(level);
+    };
+    renderReadingLevelModal(modalContainerEl, {
+      currentLevel: state.student.readingLevel || '중급',
+      onSelect: finishLevel,
+      onSkip: () => finishLevel(state.student.readingLevel || '중급')
+    });
+  } else if (!state.student.grade || isModalOpen) {
     renderOnboardingModal(modalContainerEl, {
       currentGrade: state.student.grade,
       onSelectGrade: (grade) => {
-        stateManager.setGrade(grade);
         isModalOpen = false;
+        isReadingLevelModalOpen = true;
+        stateManager.setGrade(grade);
 
         if (state.session.recentMessages.length === 0) {
           stateManager.addMessage(
@@ -127,6 +141,11 @@ function renderApp(): void {
             `안녕! ${grade} 독서 이해 도우미야. 책 사진을 찍어 보여주거나 어려운 문장을 채팅창에 적어주면, 함께 생각하며 이해하도록 도와줄게!`
           );
         }
+        renderApp();
+      },
+      onOpenReadingLevel: () => {
+        isModalOpen = false;
+        isReadingLevelModalOpen = true;
         renderApp();
       },
       onClose: () => {
@@ -517,6 +536,7 @@ window.addEventListener('DOMContentLoaded', () => {
 // 상태 변경 시 리렌더링
 subscribeAccount(() => {
   isModalOpen = false;
+  isReadingLevelModalOpen = false;
   alertBannerEl?.classList.add('hidden');
   const title = new URLSearchParams(window.location.search).get('title');
   if (getAccountId() && !initialTitleHandled) {

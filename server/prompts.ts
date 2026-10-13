@@ -2,10 +2,10 @@
  * READING_AGENT_SPEC.md 기반 시스템 프롬프트 및 가드레일 정의
  */
 
-import type { ComprehensionCheck, Grade } from '../src/types/index.ts';
+import type { ComprehensionCheck, Grade, ReadingLevel } from '../src/types/index.ts';
 
 interface ReadingPromptState {
-  student?: { grade?: Grade | null };
+  student?: { grade?: Grade | null; readingLevel?: ReadingLevel };
   book?: { title?: string };
   session?: {
     difficultPoints?: string[];
@@ -18,6 +18,12 @@ type ExplanationLevel = string | null;
 
 export function buildSystemPrompt(readingState: ReadingPromptState, explanationLevel: ExplanationLevel = null): string {
   const grade = readingState?.student?.grade || '중2';
+  const readingLevel = readingState?.student?.readingLevel || '중급';
+  const readingLevelInstruction = {
+    '입문': '쉬운 단어로 한 단계씩 설명하고, 어려운 단어는 바로 풀어 써라. 이해도 확인 질문은 명시된 내용의 뜻이나 사건 순서를 묻는 간단한 질문으로 조절하라.',
+    '중급': '앞뒤 문맥과 인물의 심리·행동 이유를 중심으로 설명하라. 이해도 확인 질문은 문맥의 연결이나 인물의 감정·동기를 추론하는 질문으로 조절하라.',
+    '심화': '상징·주제·비판적 해석을 중심으로 설명하라. 이해도 확인 질문은 본문 근거를 들어 해석을 비교하거나 주제를 비판적으로 생각하는 질문으로 조절하라.'
+  }[readingLevel];
   const bookTitle = readingState?.book?.title || '미정';
   const difficultPoints = readingState?.session?.difficultPoints?.join(', ') || '없음';
   const understoodPoints = readingState?.session?.understoodPoints?.join(', ') || '없음';
@@ -52,6 +58,11 @@ export function buildSystemPrompt(readingState: ReadingPromptState, explanationL
 - 이해한 부분: ${understoodPoints}
 - 이전 이해 확인 기록: ${prevChecks}
 ${levelInstruction}
+
+[독서 수준 맞춤 조건]
+- 독서 수준: ${readingLevel} (학년 ${grade}와 함께 반영)
+- ${readingLevelInstruction}
+- 설명과 이해도 확인 질문 모두 이 수준을 적용하되 학년에 맞는 어휘를 사용하라. '더 간단히' 또는 '조금 더 자세히' 요청은 설명 길이와 구체성을 조절하며, 이해 확인 질문은 선택한 독서 수준을 따른다.
 
 [핵심 대화 원칙]
 1. [사진 또는 책 내용 첫 입력 시]

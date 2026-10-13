@@ -2,6 +2,7 @@ export type SearchMode = 'exact' | 'similar' | 'topic' | 'author' | 'broad';
 export type BookSourceType = 'yes24' | 'library' | 'web';
 export type Difficulty = '쉬움' | '보통' | '높음' | '미지정';
 export type Grade = '중1' | '중2' | '중3' | string;
+export type ReadingLevel = '입문' | '중급' | '심화';
 
 export interface Book {
   title: string;
@@ -153,7 +154,7 @@ export interface GazeReport {
 }
 
 export interface ReadingState {
-  student: { grade: Grade | null };
+  student: { grade: Grade | null; readingLevel?: ReadingLevel; readingLevelSelected?: boolean };
   book: { title: string };
   session: {
     recentMessages: ReadingMessage[];

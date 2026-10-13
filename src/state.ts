@@ -1,6 +1,6 @@
 import { saveSessionSnapshot } from './sessionHistory.ts';
 import { accountGet, accountSet, subscribeAccount } from './accountStorage.ts';
-import type { ComprehensionCheck, GazeReport, Grade, MessageImage, ReadingMessage, ReadingState, TaoLog } from './types/index.ts';
+import type { ComprehensionCheck, GazeReport, Grade, MessageImage, ReadingMessage, ReadingState, ReadingLevel, TaoLog } from './types/index.ts';
 
 /**
  * READING_AGENT_SPEC.md 기반 상태 관리 및 영속화
@@ -13,7 +13,9 @@ const STORAGE_KEYS = {
 
 const DEFAULT_STATE: ReadingState = {
   student: {
-    grade: null // '중1' | '중2' | '중3' | null
+    grade: null,
+    readingLevel: '중급',
+    readingLevelSelected: false
   },
   book: {
     title: ''
@@ -48,7 +50,7 @@ class StateManager {
 
   loadState(): ReadingState {
     try {
-      const profile = JSON.parse(accountGet(STORAGE_KEYS.PROFILE) || '{}') as { grade?: Grade };
+      const profile = JSON.parse(accountGet(STORAGE_KEYS.PROFILE) || '{}') as { grade?: Grade; readingLevel?: ReadingLevel; readingLevelSelected?: boolean };
       const session = JSON.parse(accountGet(STORAGE_KEYS.SESSION) || '{}') as {
         bookTitle?: string;
         recentMessages?: ReadingMessage[];
@@ -66,7 +68,9 @@ class StateManager {
 
       return {
         student: {
-          grade: profile.grade || null
+          grade: profile.grade || null,
+          readingLevel: profile.readingLevel === '입문' || profile.readingLevel === '심화' ? profile.readingLevel : '중급',
+          readingLevelSelected: profile.readingLevelSelected === true
         },
         book: {
           title: session.bookTitle || ''
@@ -94,7 +98,9 @@ class StateManager {
   saveState(): void {
     try {
       accountSet(STORAGE_KEYS.PROFILE, JSON.stringify({
-        grade: this.state.student.grade
+        grade: this.state.student.grade,
+        readingLevel: this.state.student.readingLevel || '중급',
+        readingLevelSelected: this.state.student.readingLevelSelected === true
       }));
 
       accountSet(STORAGE_KEYS.SESSION, JSON.stringify({
@@ -134,6 +140,12 @@ class StateManager {
 
   setGrade(grade: Grade): void {
     this.state.student.grade = grade;
+    this.notify();
+  }
+
+  setReadingLevel(level: ReadingLevel): void {
+    this.state.student.readingLevel = level;
+    this.state.student.readingLevelSelected = true;
     this.notify();
   }
 

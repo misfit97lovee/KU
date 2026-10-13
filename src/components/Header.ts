@@ -26,7 +26,7 @@ export function serviceHeader(activePage: ActivePage, gradeControl: string, rese
 export function renderHeader(container: HTMLElement, state: ReadingState, { onOpenGradeModal, onResetSession, onTitleChange, isBusy = false }: HeaderOptions): void {
   const gradeText = state.student.grade || '학년 선택';
   container.innerHTML = serviceHeader('reading',
-    `<button id="btn-grade-toggle" class="grade-control" aria-label="학년 변경">${gradeText}<span aria-hidden="true">⌄</span></button>`,
+    `<button id="btn-grade-toggle" class="grade-control" aria-label="독서 설정: 학년과 독서 수준 변경">${gradeText} · ${state.student.readingLevel || '중급'}<span aria-hidden="true">⌄</span></button>`,
     `<button id="btn-reset-session" class="btn-secondary-sm" ${isBusy ? 'disabled title="답변이 끝나면 새 세션을 시작할 수 있어요"' : ''}>새 세션</button>`) + `
     <div class="reading-heading">
       <div><h1>읽기 도우미</h1><p>어려운 문장부터, 함께 천천히 읽어요.</p></div>
