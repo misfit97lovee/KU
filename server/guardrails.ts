@@ -14,8 +14,10 @@ export function sanitizeError(error: unknown, extraKeys: string[] = []): string 
   let msg = error instanceof Error ? error.message : String(error);
 
   const keysToMask = [
-    process.env.GEMINI_API_KEY,
-    process.env.GEMINI_API,
+    process.env.GPT_API,
+    process.env.GPT,
+    process.env.OPENAI_API_KEY,
+    process.env.SUPABASE_SECRET_KEY,
     process.env.DATA4LIBRARY_AUTH_KEY,
     process.env.YES24_API,
     ...extraKeys

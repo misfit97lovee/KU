@@ -1,5 +1,6 @@
 import { Router, type Request } from 'express';
 import type { AuthUser } from './auth.ts';
+import { hasReadingActivity } from '../src/readingActivity.ts';
 export interface DatabaseSession {
   id: string; kind: 'reading' | 'recommendation'; title: string; savedAt: string;
   snapshot: {
@@ -93,6 +94,7 @@ export function createDatabaseRouter(db: ReadingDatabase, resolveUser: (req: Req
       || typeof savedAt !== 'string' || !Number.isFinite(Date.parse(savedAt))) {
       return res.status(400).json({ error: '올바른 세션 기록이 필요합니다.' });
     }
+    if (!hasReadingActivity(kind, snapshot)) return res.status(400).json({ error: '독서 활동이 있는 기록만 저장할 수 있습니다.' });
     try {
       await db.save(res.locals.user, { id, kind, title, snapshot, savedAt });
       res.json({ saved: true });

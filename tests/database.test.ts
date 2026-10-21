@@ -34,6 +34,9 @@ test('DB 장애는 503으로 격리되고 인증 없는 요청은 DB에 접근�
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/db/sessions`;
   try {
     assert.equal((await fetch(url)).status, 401); assert.equal(calls, 0);
+    const empty = await fetch(url + '/empty-record', { method: 'PUT', headers: { Cookie: 'valid', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind:'reading', title:'제목만 있는 기록', savedAt:new Date().toISOString(), snapshot:{book:{title:'제목만'},session:{recentMessages:[{role:'assistant',content:'안녕!'}]}} }) });
+    assert.equal(empty.status,400); assert.equal(calls,0);
     const response = await fetch(url, { headers: { Cookie: 'valid' } });
     assert.equal(response.status, 503); assert.equal(calls, 1);
     assert(!JSON.stringify(await response.json()).includes('sensitive-key'));

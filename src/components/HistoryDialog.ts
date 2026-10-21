@@ -1,8 +1,9 @@
-import { getSavedSessions } from '../sessionHistory.ts';
+import { getSavedSessions, mergeSavedSessions, removeSavedSession } from '../sessionHistory.ts';
 import type { SavedSession } from '../sessionHistory.ts';
 import { formatText } from '../formatText.ts';
 import { getUnderstandingData } from './ReadingRecordPanel.ts';
-import { subscribeAccount, accountFetch, getAccountId } from '../accountStorage.ts';
+import { subscribeAccount, accountFetch, accountGet, getAccountId } from '../accountStorage.ts';
+import { hasReadingActivity } from '../readingActivity.ts';
 import { stateManager } from '../state.ts';
 import { renderGazeReports } from '../gaze/renderReport.ts';
 import '../gaze.css';
@@ -11,7 +12,7 @@ subscribeAccount(() => document.getElementById('history-dialog-overlay')?.remove
 
 const escape = (value: unknown): string => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 
-export function openHistoryDialog(): void {
+export function openHistoryDialog(options: { saveCurrent?: boolean } = {}): void {
   document.getElementById('history-dialog-overlay')?.remove();
   const previousFocus = document.activeElement as HTMLElement | null;
   const overlay = document.createElement('div');
@@ -20,84 +21,102 @@ export function openHistoryDialog(): void {
   let records: SavedSession[];
   let localError = '';
   try { records = getSavedSessions(); }
-  catch { records = []; localError = '브라우저 기록을 불러오지 못했어요. 원본은 유지되며 DB 기록은 별도로 조회할 수 있어요.'; }
+  catch { records = []; localError = '일부 기록을 불러오지 못했어요. 잠시 후 다시 확인해주세요.'; }
   let selected = records[0]?.id;
   let tab = 'conversation';
-  const localRecords = records;
-  let source: 'local' | 'db' = 'local';
+  let localRecords = records;
+  let remoteRecords: SavedSession[] = [];
+  let remoteFailed = false;
   let status = localError;
   let busy = false;
   // Only an explicit click uploads the current reading session. Never enumerate
   // or automatically migrate pre-existing localStorage records.
   let upload: SavedSession | null = null;
   const loadDb = async () => {
-    busy = true; status = 'DB 기록을 불러오는 중…'; render();
+    busy = true; status = '기록을 불러오는 중…'; render();
     try {
       const response = await accountFetch('/api/db/sessions', { credentials: 'same-origin' });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'DB 조회 실패');
       if (!overlay.isConnected) return;
-      records = data.records; selected = records[0]?.id; status = '';
+      if (!Array.isArray(data.records)) throw new Error('Invalid records');
+      remoteRecords = data.records;
+      records = mergeSavedSessions(localRecords, remoteRecords);
+      if (!records.some(record => record.id === selected)) selected = records[0]?.id;
+      remoteFailed = false; status = localError;
     } catch (error) {
       if (!overlay.isConnected) return;
-      status = error instanceof Error && error.name === 'AbortError' ? '' : 'DB 기록을 불러오지 못했어요. 브라우저 기록은 유지됩니다.';
+      remoteFailed = true;
+      status = error instanceof Error && error.name === 'AbortError' ? '' : '일부 기록을 불러오지 못했어요. 보이는 기록은 그대로 확인할 수 있어요.';
     } finally { busy = false; if (overlay.isConnected) render(); }
   };
   const close = () => { overlay.remove(); previousFocus?.focus(); };
   const render = () => {
     const record = records.find(r => r.id === selected);
     overlay.innerHTML = `<section class="history-dialog" role="dialog" aria-modal="true" aria-labelledby="history-title">
-      <div class="history-heading"><div><h2 id="history-title">저장기록</h2><p>새 세션을 시작하기 전에 보관한 기록이에요.</p></div><button class="btn-secondary-sm" id="close-history">닫기</button></div>
-      <div class="history-tabs">
-        <button class="btn-secondary-sm" id="history-local" ${busy ? 'disabled' : ''}>이 브라우저 기록</button>
-        <button class="btn-secondary-sm" id="history-db" ${busy || !getAccountId() ? 'disabled' : ''}>내 DB 기록</button>
-        <button class="btn-secondary-sm" id="history-save-db" ${busy || !getAccountId() ? 'disabled' : ''}>현재 독서 DB 저장</button>
+      <div class="history-heading"><div><h2 id="history-title">내 독서 기록</h2><p>읽고 생각한 내용을 다시 살펴보세요.</p></div><button class="btn-secondary-sm" id="close-history">닫기</button></div>
+      <div class="history-actions">
+        <button class="btn-secondary-sm" id="history-save-db" ${busy || !getAccountId() ? 'disabled' : ''}>기록 저장</button>
+        ${remoteFailed ? `<button class="btn-secondary-sm" id="history-refresh" ${busy ? 'disabled' : ''}>다시 불러오기</button>` : ''}
       </div>
       <p role="status">${escape(status)}</p>
-      ${records.length ? `<div class="history-layout"><nav class="history-list" aria-label="저장된 세션">${records.map(r => `<button class="history-item ${r.id === selected ? 'selected' : ''}" data-record="${escape(r.id)}" aria-pressed="${r.id === selected}"><span>${escape(r.title)}</span><small>${r.kind === 'reading' ? '읽기 도우미' : '책 추천'} · ${escape(new Date(r.savedAt).toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</small></button>`).join('')}</nav>
+      ${records.length ? `<div class="history-layout"><nav class="history-list" aria-label="저장한 독서 기록">${records.map(r => `<button class="history-item ${r.id === selected ? 'selected' : ''}" data-record="${escape(r.id)}" aria-pressed="${r.id === selected}"><span>${escape(r.title)}</span><small>${escape(new Date(r.savedAt).toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</small></button>`).join('')}</nav>
         <div class="history-detail"><h3>${escape(record?.title)}</h3>
           <div class="history-tabs" role="tablist">${(record?.kind === 'reading' ? [['conversation','대화'],['summary','요약'],['note','독서노트'],['map','이해도']] : [['conversation','대화'],['books','추천 도서'],['note','독서노트']]).map(([id,label]) => `<button role="tab" aria-selected="${tab === id}" class="history-tab ${tab === id ? 'active' : ''}" data-history-tab="${id}">${label}</button>`).join('')}</div>
           <div class="history-content" role="tabpanel">${record ? renderRecord(record, tab) : ''}</div>
-        </div></div>` : '<div class="history-empty">아직 저장된 기록이 없어요.<p>대화를 나눈 뒤 새 세션을 누르면 여기에 보관돼요.</p></div>'}
-      ${source === 'db' && record ? `<button class="btn-secondary-sm" id="history-delete-db" ${busy ? 'disabled' : ''}>선택한 DB 기록 삭제</button>` : ''}
-      <p class="history-storage-note">${source === 'local' ? '이 브라우저에 저장된 기록입니다.' : '로그인한 계정의 DB 기록입니다. 다른 기기에서도 조회할 수 있어요.'} DB 저장은 직접 누를 때만 실행되며, 책 사진과 히트맵이 있으면 함께 저장됩니다. 기존 브라우저 기록은 자동 이전하지 않습니다.</p>
+        </div></div>` : '<div class="history-empty">아직 저장된 기록이 없어요.<p>함께 읽은 뒤 ‘기록 저장’을 눌러보세요.</p></div>'}
+      ${record ? `<button class="btn-secondary-sm history-delete" id="history-delete-db" ${busy || remoteFailed ? 'disabled' : ''}>기록 삭제</button>` : ''}
+      <p class="history-storage-note">${getAccountId() ? '로그인한 계정의 기록이에요. 기록 저장을 누르면 다른 기기에서도 확인할 수 있어요.' : '로그인하면 내 독서 기록을 저장하고 확인할 수 있어요.'} 사진이 포함된 기록은 책 사진과 읽기 흔적도 함께 저장됩니다.</p>
     </section>`;
     overlay.querySelector<HTMLButtonElement>('#close-history')!.onclick = close;
-    overlay.querySelector<HTMLButtonElement>('#history-local')!.onclick = () => {
-      source = 'local'; records = localRecords; selected = records[0]?.id; tab = 'conversation'; status = localError; render();
-    };
-    overlay.querySelector<HTMLButtonElement>('#history-db')!.onclick = () => {
-      source = 'db'; records = []; selected = undefined; tab = 'conversation'; void loadDb();
-    };
+    overlay.querySelector<HTMLButtonElement>('#history-refresh')?.addEventListener('click', () => { void loadDb(); });
     overlay.querySelector<HTMLButtonElement>('#history-save-db')!.onclick = async () => {
-      const state = stateManager.getState();
-      if (!upload && !state.book.title && !state.session.recentMessages.length && !state.session.gazeReports?.length && !state.session.readingNote && !state.session.summary) {
-        status = '저장할 현재 독서 내용이 없어요.'; render(); return;
+      let current: SavedSession;
+      try {
+        const kind = window.location.pathname.startsWith('/curator/') ? 'recommendation' : 'reading';
+        const snapshot = kind === 'reading' ? stateManager.getState() : JSON.parse(accountGet('pageon-current-recommendation') || '{}');
+        if (!upload && !hasReadingActivity(kind, snapshot)) {
+          status = '아직 저장할 독서 활동이 없어요. 대화를 나누거나 읽은 내용을 정리해보세요.'; render(); return;
+        }
+        const title = kind === 'reading' ? snapshot.book?.title || '제목 없는 독서' : snapshot.recommendedBooks?.at(-1)?.title || '책 추천 대화';
+        current = upload || { id: crypto.randomUUID(), kind, savedAt: new Date().toISOString(), title, snapshot: JSON.parse(JSON.stringify(snapshot)) };
+      } catch { status = '현재 기록을 확인하지 못했어요. 잠시 후 다시 시도해주세요.'; render(); return; }
+      if (!upload) {
+        const same = remoteRecords.find(record => record.kind === current.kind && JSON.stringify(record.snapshot) === JSON.stringify(current.snapshot));
+        upload = same || current;
       }
-      upload ||= { id: crypto.randomUUID(), kind: 'reading', savedAt: new Date().toISOString(),
-        title: state.book.title || '제목 없는 독서', snapshot: JSON.parse(JSON.stringify(state)) };
-      busy = true; status = 'DB에 저장 중…'; render();
+      busy = true; status = '기록을 저장하는 중…'; render();
       try {
         const response = await accountFetch(`/api/db/sessions/${encodeURIComponent(upload.id)}`, {
           method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(upload)
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'DB 저장 실패');
+        if (!response.ok) throw new Error('Save failed');
         if (!overlay.isConnected) return;
-        source = 'db'; await loadDb();
+        await loadDb();
+        if (!remoteFailed) { selected = upload.id; status = '기록을 저장했어요.'; }
       } catch {
-        status = 'DB 저장을 완료하지 못했어요. 다시 누르면 같은 기록으로 재시도합니다. 브라우저 기록은 유지됩니다.';
+        status = '저장을 완료하지 못했어요. 다시 눌러 시도해주세요. 현재 내용은 그대로 유지됩니다.';
       } finally { busy = false; if (overlay.isConnected) render(); }
     };
     overlay.querySelector<HTMLButtonElement>('#history-delete-db')?.addEventListener('click', async () => {
-      if (!selected || !confirm('선택한 DB 기록을 삭제할까요? 브라우저 기록은 유지됩니다.')) return;
+      if (!selected || !confirm('이 독서 기록을 삭제할까요?')) return;
+      const id = selected;
       busy = true; render();
       try {
-        const response = await accountFetch(`/api/db/sessions/${encodeURIComponent(selected)}`, { method: 'DELETE', credentials: 'same-origin' });
-        await response.json();
-        if (!response.ok) throw new Error('삭제 실패');
-        if (overlay.isConnected) await loadDb();
-      } catch { status = 'DB 기록 삭제에 실패했어요.'; }
+        if (remoteRecords.some(record => record.id === id)) {
+          const response = await accountFetch(`/api/db/sessions/${encodeURIComponent(id)}`, { method: 'DELETE', credentials: 'same-origin' });
+          await response.json();
+          if (!response.ok) throw new Error('Delete failed');
+        }
+        if (!overlay.isConnected) return;
+        if (localRecords.some(record => record.id === id)) removeSavedSession(id);
+        localRecords = localRecords.filter(record => record.id !== id);
+        remoteRecords = remoteRecords.filter(record => record.id !== id);
+        records = mergeSavedSessions(localRecords, remoteRecords); selected = records[0]?.id;
+        if (upload?.id === id) upload = null;
+        status = '기록을 삭제했어요.';
+      } catch { status = '기록 삭제를 완료하지 못했어요. 다시 시도해주세요.'; }
       finally { busy = false; if (overlay.isConnected) render(); }
     });
     overlay.querySelectorAll<HTMLButtonElement>('[data-record]').forEach(button => button.onclick = () => { selected = button.dataset.record; tab = 'conversation'; render(); overlay.querySelector<HTMLElement>(`[data-record="${selected}"]`)?.focus(); });
@@ -116,12 +135,15 @@ export function openHistoryDialog(): void {
   render();
   document.body.appendChild(overlay);
   overlay.querySelector<HTMLElement>('#close-history')?.focus();
+  if (getAccountId()) void loadDb().then(() => {
+    if (options.saveCurrent === true && overlay.isConnected) overlay.querySelector<HTMLButtonElement>('#history-save-db')?.click();
+  });
 }
 
 function renderRecord(record: SavedSession, tab: string): string {
   const saved = record.snapshot;
   const session = saved.session || {};
-  const empty = '<p class="history-empty">이 세션에 저장된 내용이 없어요.</p>';
+  const empty = '<p class="history-empty">아직 남긴 내용이 없어요.</p>';
   if (tab === 'conversation') {
     const messages = record.kind === 'reading' ? session.recentMessages || [] : saved.chatHistory || [];
     return messages.length ? messages.map(message => {

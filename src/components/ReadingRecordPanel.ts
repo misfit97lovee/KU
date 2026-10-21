@@ -17,6 +17,7 @@ interface ReadingRecordOptions {
   onGenerateReadingNote?: () => void;
   isReadingNoteLoading: boolean;
   onRetryExplain?: (topic: string) => void;
+  onSaveRecord?: () => void;
 }
 interface NoteSection { title: string; content: string[] }
 interface CanonicalTopic { id: string; topic: string; status: UnderstandingStatus; updatedAt: number }
@@ -29,7 +30,8 @@ export function renderReadingRecordPanel(container: HTMLElement, {
   isSummaryLoading,
   onGenerateReadingNote,
   isReadingNoteLoading,
-  onRetryExplain
+  onRetryExplain,
+  onSaveRecord
 }: ReadingRecordOptions): void {
   let activeTab = currentRecordTab;
 
@@ -37,11 +39,14 @@ export function renderReadingRecordPanel(container: HTMLElement, {
     container.innerHTML = `
       <div class="panel-header">
         <div class="panel-title">
-          <span>독서 기록</span>
+          <span>읽은 내용 정리</span>
         </div>
       </div>
 
       <div class="panel-body">
+        ${state.session.readingNote ? `<div class="reading-next"><p>오늘 읽은 내용이 정리됐어요.</p><button class="btn-send-book" id="btn-save-record">기록 저장</button></div>`
+          : state.session.comprehensionChecks.some(check => /잘 이해|거의 이해/u.test(check.result || '')) && activeTab !== 'reading-note'
+          ? `<div class="reading-next"><p>이해한 내용을 독서노트로 남겨볼까요?</p><button class="btn-send-book" id="btn-next-note">독서노트 만들기</button></div>` : ''}
         <div class="record-tabs">
           <button class="record-tab-btn ${activeTab === 'summary' ? 'active' : ''}" data-tab="summary">
             요약
@@ -70,6 +75,11 @@ export function renderReadingRecordPanel(container: HTMLElement, {
     });
 
     // 요약 버튼 이벤트
+    container.querySelector('#btn-save-record')?.addEventListener('click', () => onSaveRecord?.());
+    container.querySelector('#btn-next-note')?.addEventListener('click', () => {
+      currentRecordTab = 'reading-note'; activeTab = 'reading-note'; update();
+      if (!isReadingNoteLoading) onGenerateReadingNote?.();
+    });
     const summaryBtn = container.querySelector('#btn-generate-summary');
     if (summaryBtn) {
       summaryBtn.addEventListener('click', () => {
@@ -139,7 +149,7 @@ function renderSummaryTab(summary: string | null, isSummaryLoading: boolean): st
 ${formatText(summary)}
         </div>
         <div style="font-size: 11px; color: var(--text-muted); text-align: right;">
-          이 브라우저에 자동으로 저장돼요.
+          ‘기록 저장’을 누르면 나중에 다시 읽을 수 있어요.
         </div>
       ` : `
         <div class="phase-placeholder" style="margin-top: 10px;">
@@ -162,7 +172,7 @@ function renderReadingNoteTab(note: string | null, isReadingNoteLoading: boolean
         ${isReadingNoteLoading ? 'disabled style="opacity: 0.6; cursor: not-allowed;"' : ''}
         style="background: var(--primary);"
       >
-        ${isReadingNoteLoading ? '독서노트 작성 중…' : '독서노트 업데이트'}
+        ${isReadingNoteLoading ? '독서노트 작성 중…' : note ? '독서노트 다시 정리' : '독서노트 만들기'}
       </button>
 
       ${isReadingNoteLoading ? `
@@ -175,13 +185,13 @@ function renderReadingNoteTab(note: string | null, isReadingNoteLoading: boolean
       ` : note ? `
         ${renderFormattedReadingNote(note)}
         <div style="font-size: 11px; color: var(--text-muted); text-align: right;">
-          이 브라우저에 자동으로 저장돼요.
+          ‘기록 저장’을 누르면 나중에 다시 읽을 수 있어요.
         </div>
       ` : `
         <div class="phase-placeholder" style="margin-top: 10px;">
           <div style="font-weight: 600; color: var(--text-primary);">오늘의 생각을 남겨보세요</div>
           <p style="color: var(--text-secondary); font-size: 12px; margin-top: 4px;">
-            대화를 나누고 독서노트를 업데이트해 보세요.
+            함께 읽고 이해한 내용을 짧게 정리해요.
           </p>
         </div>
       `}
@@ -329,7 +339,7 @@ function renderUnderstandingMapTab(session: UnderstandingSession): string {
       </div>
 
       <div class="map-footer">
-        이 브라우저에 자동으로 저장돼요.
+        이해한 내용은 독서노트에 함께 담겨요.
       </div>
     </div>
   `;

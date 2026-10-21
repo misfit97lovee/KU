@@ -40,6 +40,35 @@ test('A 기록 생성 → 로그아웃 비움 → B 격리 → A 재로그인 �
   delete (globalThis as { localStorage?: Storage }).localStorage;
 });
 
+test('수동 중지와 계정 취소 신호를 모두 전달하고 JSON 처리 중 취소도 차단한다', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.localStorage = { getItem: () => null, setItem: () => {} } as unknown as Storage;
+  let usedSignal: AbortSignal | null | undefined;
+  let resolveJson!: (value: unknown) => void;
+  globalThis.fetch = async (_url, options) => {
+    usedSignal = options?.signal;
+    const response = new Response('{}');
+    response.json = () => new Promise(resolve => { resolveJson = resolve; });
+    return response;
+  };
+  try {
+    for (const cancel of ['manual', 'account']) {
+      setAccount('cancel-A');
+      const controller = new AbortController();
+      const response = await accountFetch('/api/recommend-books', { signal: controller.signal });
+      const body = response.json();
+      if (cancel === 'manual') controller.abort(); else setAccount('cancel-B');
+      assert.equal(usedSignal?.aborted, true);
+      resolveJson({ books: ['late response'] });
+      await assert.rejects(body, { name: 'AbortError' });
+    }
+  } finally {
+    setAccount(null);
+    globalThis.fetch = originalFetch;
+    delete (globalThis as { localStorage?: Storage }).localStorage;
+  }
+});
+
 test('계정 전환 전에 시작한 응답은 새 계정에 적용되지 않음', async () => {
   globalThis.localStorage = { getItem: () => null, setItem: () => {} } as unknown as Storage;
   const originalFetch = globalThis.fetch;

@@ -1,7 +1,10 @@
 // Presentation only: escape HTML before applying a small, safe Markdown subset.
+export function displayText(value: unknown): string {
+  return String(value ?? '').replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, '');
+}
+
 export function formatText(value: unknown): string {
-  const escaped = String(value ?? '')
-    .replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, '')
+  const escaped = displayText(value)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
   const inline = (text: string): string => text

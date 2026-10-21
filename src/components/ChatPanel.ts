@@ -79,10 +79,8 @@ export function renderChatPanel(container: HTMLElement, { state, onSendMessage, 
         ${isLoading ? `
           <div class="chat-bubble assistant">
             <div class="chat-content">
-              <div class="typing-indicator">
-                <div class="typing-dot"></div>
-                <div class="typing-dot"></div>
-                <div class="typing-dot"></div>
+              <div class="typing-indicator" id="streaming-response" style="white-space: pre-wrap">
+                답변을 쓰는 중…
               </div>
             </div>
           </div>

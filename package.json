@@ -10,6 +10,7 @@
     "dev": "concurrently -k -n \"SERVER,CLIENT\" -c \"blue,green\" \"npm run server\" \"npm run client\"",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.server.json",
     "build": "npm run typecheck && vite build",
+    "build:pages": "npm run typecheck && node scripts/build-pages.mjs",
     "preview": "vite preview",
     "test": "node --import tsx --test tests/*.test.ts"
   },

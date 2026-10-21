@@ -35,10 +35,13 @@ export function accountSet(key: string, value: string, storage: Pick<Storage, 's
 
 export async function accountFetch(url: string, options: RequestInit): Promise<Response> {
   const startedAt = revision;
-  const response = await fetch(url, { ...options, signal: controller.signal });
+  const signal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
+  const response = await fetch(url, { ...options, signal });
   const readJson = response.json.bind(response);
   response.json = async () => {
+    signal.throwIfAborted();
     const data: unknown = await readJson();
+    signal.throwIfAborted();
     if (startedAt !== revision) throw new DOMException('Account changed', 'AbortError');
     return data;
   };

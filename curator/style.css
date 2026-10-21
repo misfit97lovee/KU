@@ -1,7 +1,7 @@
 @import '../src/shared.css';
-.recommendation-page { max-width: 1000px; padding: 50px 0 64px; margin: 0 auto; }
-.recommendation-heading { margin-bottom: 28px; text-align: center; }
-.recommendation-heading h1 { font-size: 34px; font-weight: 500; letter-spacing: -1.2px; }
+.recommendation-page { max-width: 960px; padding: 32px 24px 40px; margin: 0 auto; }
+.recommendation-heading { margin-bottom: 24px; text-align: left; }
+.recommendation-heading h1 { font-size: var(--font-title); font-weight: 600; letter-spacing: -.5px; }
 .recommendation-heading p { color: var(--text-secondary); font-size: 14px; margin-top: 8px; }
 .recommendation-chat { display: flex; flex-direction: column; background: transparent; border: 0; border-radius: 0; overflow: visible; }
 .chat-messages { order: 3; min-height: 0; max-height: none; overflow: visible; padding: 34px 0 0; }
@@ -19,28 +19,28 @@
 .chips-label { display: block; color: var(--text-muted); font-size: 12px; margin: 0; }
 .quick-chips-list { display: flex; flex-wrap: wrap; gap: 8px; }
 .chat-input-container { order: 1; width: min(100%, 880px); margin: 0 auto; padding: 0; border-top: 0; }
-.chat-input-box { display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 8px 8px 8px 20px; border: 1px solid var(--primary-border); border-radius: 16px; background: #fff; box-shadow: 0 8px 24px rgba(42, 76, 128, .06); }
-.chat-input-box::before { content: '⌕'; color: var(--text-muted); font-size: 24px; line-height: 1; transform: rotate(-20deg); }
+.chat-input-box { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 8px 8px 8px 16px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: #fff; }
 .chat-input-box:focus-within { border-color: var(--primary); }
 .chat-textarea { background: transparent; border: none; color: var(--text-primary); width: 0; flex: 1; resize: none; max-height: 140px; min-height: 40px; padding: 8px 4px; line-height: 1.7; }
 .chat-textarea:focus { outline: none; }
 .send-btn { flex-shrink: 0; min-width: 112px; }
+.send-btn.stop-btn { color: var(--text-primary); background: var(--bg-subtle); border: 1px solid var(--text-muted); }
+.send-btn.stop-btn:hover { background: var(--primary-light); }
 .input-hint { display: none; }
 .msg-group.librarian:has(.book-card) > div > .msg-bubble { padding: 0; border: 0; background: transparent; border-radius: 0; font-size: 22px; font-weight: 500; color: var(--text-primary); }
 .msg-group.librarian:has(.book-card) > div > .msg-time { display: none; }
-.book-cards-container { display: grid; grid-template-columns: 1fr; gap: 18px; margin-top: 16px; }
-.book-card { min-height: 310px; border: 1px solid var(--border-color); border-radius: 22px; overflow: hidden; padding: 24px; display: grid; grid-template-columns: 194px minmax(0, 1fr); gap: 28px; background: #fff; box-shadow: 0 10px 30px rgba(48, 73, 111, .05); }
-.book-cover-wrap { height: 262px; display: flex; justify-content: center; align-items: center; background: var(--bg-subtle); border-radius: var(--radius-md); padding: 8px; }
-.book-cover-img { max-width: 100%; height: 246px; object-fit: contain; }
-.book-cover-fallback { width: 160px; height: 232px; background: #e9edf4; border-left: 4px solid #d7deeb; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 11px; }
+.book-cards-container { display: grid; grid-template-columns: 1fr; gap: 0; margin-top: 16px; }
+.book-card { min-height: 0; border: 0; border-bottom: 1px solid var(--border-color); border-radius: 0; overflow: hidden; padding: 20px 0; display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 20px; background: transparent; }
+.book-cover-wrap { height: 142px; display: flex; justify-content: center; align-items: flex-start; padding: 0; }
+.book-cover-img { max-width: 100%; max-height: 142px; object-fit: contain; }
+.book-cover-fallback { width: 112px; height: 166px; background: #e9edf4; border-left: 4px solid #d7deeb; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 11px; }
 .book-card-content { display: flex; flex: 1; flex-direction: column; gap: 10px; padding: 4px 0; }
 .book-card-header { display: flex; flex-direction: column; gap: 5px; }
-.book-title { font-size: 27px; line-height: 1.35; font-weight: 500; letter-spacing: -.6px; overflow-wrap: anywhere; }
-.book-badge { width: fit-content; order: -1; padding: 3px 10px; border-radius: var(--radius-full); background: var(--primary-light); font-size: 11px; color: var(--primary); }
+.book-title { font-size: 18px; line-height: 1.4; font-weight: 600; letter-spacing: -.4px; overflow-wrap: anywhere; }
+.book-badge { width: fit-content; order: -1; font-size: 11px; color: var(--text-secondary); }
 .book-meta { display: flex; flex-direction: column; font-size: 12px; color: var(--text-muted); gap: 3px; }
 .book-meta span:first-child { font-size: 14px; font-weight: 500; color: var(--text-secondary); }
-.book-reason { margin-top: 2px; padding: 12px 0 0 14px; border-top: 0; border-left: 2px solid var(--primary); font-size: 13px; color: var(--text-secondary); line-height: 1.75; }
-.book-reason::before { content: '이 책을 추천하는 이유'; display: block; margin-bottom: 5px; color: var(--primary); font-weight: 600; }
+.book-reason { margin-top: 2px; font-size: 13px; color: var(--text-secondary); line-height: 1.75; }
 .reason-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .book-actions { display: flex; align-items: center; justify-content: flex-end; gap: 16px; flex-wrap: wrap; margin-top: auto; padding-top: 8px; }
 .book-btn { width: auto; min-width: 124px; }
@@ -106,4 +106,4 @@
 .msg-group.librarian { flex-direction: column; }
 .recommendation-chat.has-messages .chat-messages { order: 1; }
 .recommendation-chat.has-messages .quick-chips-bar { display: none; }
-.recommendation-chat.has-messages .chat-input-container { order: 4; position: sticky; bottom: 0; z-index: 10; width: 100%; padding: 12px max(0px, calc((100% - 880px) / 2)) 14px; background: linear-gradient(to bottom, rgba(245, 247, 251, 0), var(--bg-primary) 14px); }
+.recommendation-chat.has-messages .chat-input-container { order: 4; position: static; width: 100%; margin-top: 20px; padding: 12px max(0px, calc((100% - 880px) / 2)) 14px; background: var(--bg-primary); }

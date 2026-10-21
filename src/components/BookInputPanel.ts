@@ -7,13 +7,14 @@ let closeActiveGaze: (() => void) | null = null;
 subscribeAccount(() => { closeActiveGaze?.(); closeActiveGaze = null; });
 
 interface BookInputOptions {
+  introductory?: boolean;
   bookTitle?: string;
   onSendToChat: (text: string) => void;
   onSendImage: (payload: { text: string; image: MessageImage; previewUrl: string | null }) => void;
   onGazeReport?: (report: Omit<GazeReport, 'id' | 'createdAt'>) => void;
 }
 
-export function renderBookInputPanel(container: HTMLElement, { bookTitle = '', onSendToChat, onSendImage, onGazeReport }: BookInputOptions): void {
+export function renderBookInputPanel(container: HTMLElement, { introductory = false, bookTitle = '', onSendToChat, onSendImage, onGazeReport }: BookInputOptions): void {
   const revision = getAccountRevision();
   let activeTab: 'image' | 'direct' = 'image'; // 우선순위 1이므로 기본 탭을 '책 사진 올리기'로 설정
   let selectedFile: File | null = null;
@@ -23,33 +24,38 @@ export function renderBookInputPanel(container: HTMLElement, { bookTitle = '', o
   function update() {
     if (revision !== getAccountRevision()) return;
     container.innerHTML = `
-      <div class="panel-header">
+      ${introductory ? `<div class="reading-intro">
+        <p class="intro-label">독서 도우미</p>
+        <h1>막힌 문장부터,<br>함께 읽어요.</h1>
+        <p>책 사진을 찍거나 어려운 문장을 적어주세요.<br>책을 고르지 않아도 바로 시작할 수 있어요.</p>
+      </div>` : `<div class="panel-header">
         <div class="panel-title">
-          <span>현재 책</span>
+          <span>책 내용</span>
         </div>
-      </div>
+        <p class="panel-subtitle">궁금한 부분을 한 번에 한 장씩 보여주세요.</p>
+      </div>`}
 
       <div class="panel-body">
-        <div class="book-context-summary">
+        ${bookTitle ? `<div class="book-context-summary">
           <span>읽고 있는 책</span>
-          <strong>${escapeHtml(bookTitle || '책 제목을 입력해 주세요')}</strong>
-        </div>
-        <div class="book-tabs">
+          <strong>${escapeHtml(bookTitle)}</strong>
+        </div>` : ''}
+        ${!introductory || activeTab === 'direct' ? `<div class="book-tabs">
           <button class="book-tab-btn ${activeTab === 'image' ? 'active' : ''}" data-tab="image">
-            사진
+            ${introductory ? '사진으로 시작' : '사진'}
           </button>
           <button class="book-tab-btn ${activeTab === 'direct' ? 'active' : ''}" data-tab="direct">
-            직접 입력
+            문장 입력하기
           </button>
-        </div>
+        </div>` : ''}
 
-        ${activeTab === 'image' ? renderImageTab(selectedFile, previewUrl) : ''}
+        ${activeTab === 'image' ? renderImageTab(selectedFile, previewUrl, introductory) : ''}
         ${activeTab === 'direct' ? renderTextTab(activeTab) : ''}
       </div>
     `;
 
     // 탭 전환 이벤트
-    container.querySelectorAll('.book-tab-btn').forEach(btn => {
+    container.querySelectorAll('[data-tab]').forEach(btn => {
       btn.addEventListener('click', () => {
         activeTab = btn.getAttribute('data-tab') === 'direct' ? 'direct' : 'image';
         if (activeTab === 'direct') {
@@ -57,6 +63,7 @@ export function renderBookInputPanel(container: HTMLElement, { bookTitle = '', o
           activeCameraCleanup = null;
         }
         update();
+        if (activeTab === 'direct') container.querySelector<HTMLTextAreaElement>('#book-text-input')?.focus();
       });
     });
 
@@ -70,8 +77,8 @@ export function renderBookInputPanel(container: HTMLElement, { bookTitle = '', o
           alert('책 내용을 입력해 주세요.');
           return;
         }
-        onSendToChat(`[책 내용] "${text}"\n이 부분이 잘 이해가 안 돼.`);
         textarea.value = '';
+        onSendToChat(`[책 내용] "${text}"\n이 부분이 잘 이해가 안 돼.`);
       });
     }
 
@@ -177,19 +184,20 @@ export function renderBookInputPanel(container: HTMLElement, { bookTitle = '', o
         if (revision !== getAccountRevision()) return;
         const mimeType = file.type || 'image/jpeg';
 
-        onSendImage({
+        const payload = {
           text: `[책 사진 업로드]\n${comment}`,
           image: {
             data: base64Data,
             mimeType: mimeType
           },
           previewUrl: previewUrl
-        });
+        };
 
         // 전송 후 입력 폼 초기화
         selectedFile = null;
         previewUrl = null;
         update();
+        onSendImage(payload);
       });
     }
   }
@@ -215,7 +223,7 @@ export function renderBookInputPanel(container: HTMLElement, { bookTitle = '', o
   update();
 }
 
-function renderImageTab(selectedFile: File | null, previewUrl: string | null): string {
+function renderImageTab(selectedFile: File | null, previewUrl: string | null, introductory = false): string {
   return `
     <div style="display: flex; flex-direction: column; gap: 14px; flex: 1;">
       <input
@@ -234,24 +242,22 @@ function renderImageTab(selectedFile: File | null, previewUrl: string | null): s
           />
           <button
             id="btn-remove-photo"
-            style="position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,0.6); color: #fff; border: none; border-radius: var(--radius-full); width: 28px; height: 28px; cursor: pointer; font-size: 14px;"
+            class="photo-remove"
             title="사진 제거"
-          >✕</button>
+          >사진 지우기</button>
         </div>
         <div style="font-size: 12px; color: var(--text-secondary);">
-          선택된 파일: ${selectedFile?.name || ''} (${Math.round((selectedFile?.size || 0) / 1024)} KB)
+          ${escapeHtml(selectedFile?.name || '')}
         </div>
       ` : `
         <div class="photo-upload-actions">
-          <button type="button" id="btn-open-camera" class="btn-secondary-sm photo-action-btn">
-            사진 찍기
+          <button type="button" id="btn-open-camera" class="${introductory ? 'btn-send-book' : 'btn-secondary-sm'} photo-action-btn">
+            책 사진 찍기
           </button>
-          <button type="button" id="btn-select-file" class="btn-secondary-sm photo-action-btn">
-            파일에서 선택
-          </button>
+          ${introductory ? '<button type="button" data-tab="direct" class="btn-secondary-sm photo-action-btn">문장 입력하기</button>' : ''}
         </div>
-
-        <div
+        <button type="button" id="btn-select-file" class="file-select-link">이미 찍은 사진 선택</button>
+        ${!introductory ? `<div
           id="photo-dropzone"
           class="phase-placeholder photo-dropzone"
           role="button" tabindex="0" aria-label="책 페이지 사진 올리기"
@@ -260,10 +266,10 @@ function renderImageTab(selectedFile: File | null, previewUrl: string | null): s
           <p style="color: var(--text-secondary); font-size: 12px; margin-top: 2px;">
             JPG, PNG (드래그하거나 위 버튼을 눌러주세요)
           </p>
-        </div>
+        </div>` : ''}
       `}
 
-      <input
+      ${selectedFile ? `<input
         type="text"
         id="photo-comment-input"
         aria-label="사진에 대해 궁금한 점 (선택)"
@@ -278,7 +284,8 @@ function renderImageTab(selectedFile: File | null, previewUrl: string | null): s
         ${!selectedFile ? 'disabled style="opacity: 0.5; cursor: not-allowed;"' : ''}
       >
         이 부분 물어보기
-      </button>
+      </button>` : ''}
+      ${previewUrl ? `
       <button
         type="button"
         id="btn-gaze-read"
@@ -287,7 +294,7 @@ function renderImageTab(selectedFile: File | null, previewUrl: string | null): s
       >
         <span>시선으로 읽기</span>
         <small>${previewUrl ? '카메라로 읽는 위치를 기록해요' : '책 페이지 사진을 올리면 시작할 수 있어요'}</small>
-      </button>
+      </button>` : ''}
     </div>
   `;
 }

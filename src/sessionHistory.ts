@@ -1,5 +1,6 @@
 import type { ComprehensionCheck, GazeReport, MessageImage, RecommendedBook } from './types/index.ts';
 import { accountGet, accountSet, getAccountId } from './accountStorage.ts';
+import { hasReadingActivity } from './readingActivity.ts';
 
 export const HISTORY_KEY = 'pageon-saved-sessions';
 
@@ -47,12 +48,7 @@ export function getSavedSessions(storage: StorageAccess = localStorage): SavedSe
 export function saveSessionSnapshot(kind: SessionKind, snapshot: object, storage: StorageAccess = localStorage): SavedSession | null {
   if (!getAccountId()) return null;
   const value = snapshot as SessionSnapshot;
-  const session = value.session || {};
-  const hasContent = kind === 'reading'
-    ? Boolean(value.book?.title || session.recentMessages?.length || session.summary || session.readingNote ||
-        session.comprehensionChecks?.length || session.difficultPoints?.length || session.understoodPoints?.length || session.gazeReports?.length)
-    : Boolean(value.chatHistory?.length || value.recommendedBooks?.length || value.currentDocument);
-  if (!hasContent) return null;
+  if (!hasReadingActivity(kind, value)) return null;
   const record = {
     id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
     kind, savedAt: new Date().toISOString(),
@@ -63,4 +59,17 @@ export function saveSessionSnapshot(kind: SessionKind, snapshot: object, storage
   const records = getSavedSessions(storage);
   accountSet(HISTORY_KEY, JSON.stringify([record, ...records]), storage);
   return record;
+}
+
+export function removeSavedSession(id: string, storage: StorageAccess = localStorage): void {
+  if (!getAccountId()) return;
+  accountSet(HISTORY_KEY, JSON.stringify(getSavedSessions(storage).filter(record => record.id !== id)), storage);
+}
+
+export interface HistoryEntry extends SavedSession { local: boolean; remote: boolean }
+export function mergeSavedSessions(local: SavedSession[], remote: SavedSession[]): HistoryEntry[] {
+  const records = new Map<string, HistoryEntry>();
+  for (const record of local) records.set(record.id, { ...record, local: true, remote: false });
+  for (const record of remote) records.set(record.id, { ...record, local: records.get(record.id)?.local || false, remote: true });
+  return [...records.values()].sort((a, b) => Date.parse(b.savedAt) - Date.parse(a.savedAt) || a.id.localeCompare(b.id));
 }

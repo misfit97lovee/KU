@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { transformSync } from 'esbuild';
-import { createRecommendationService, createGeminiRecommendationClient, selectLibraryBooks, getGroundedEvidence, selectWebBooks, matchesRequestedTitle, parseBookSearchXml, NO_MATCH_MESSAGE } from '../server/bookRecommendations.ts';
+import { createRecommendationService, createOpenAIRecommendationClient, selectLibraryBooks, getGroundedEvidence, selectWebBooks, matchesRequestedTitle, parseBookSearchXml, NO_MATCH_MESSAGE } from '../server/bookRecommendations.ts';
 import type { Book, Data4LibraryBook, RecommendationRequest } from '../src/types/index.ts';
 
 const request: RecommendationRequest = {
@@ -105,7 +105,11 @@ test('API 오류/모델 오류에서 Grounding을 호출하거나 내장 책을 
     const recommend = createRecommendationService({ fetchCandidates: async () => { if (mode === 'library_failure') throw Error('offline'); return []; }, searchTitle: async () => [],
       generate: async ({ stage }) => { if (stage === 'analyze') return json(request); if (mode === 'search_failure') throw Error('quota'); return { text: '내가 아는 추천 도서' }; } });
     const result = await recommend({ userMessage: '물리학' });
-    assert.deepEqual(result.books, []); assert.equal(result.response, NO_MATCH_MESSAGE);
+    assert.deepEqual(result.books, []);
+    if (mode === 'library_failure') {
+      assert.notEqual(result.response, NO_MATCH_MESSAGE);
+      assert(result.response.includes('일시적인 문제'));
+    } else assert.equal(result.response, NO_MATCH_MESSAGE);
     assert.equal(result.search.fallbackUsed, false); assert.equal(result.search.googleSearchRequested, false);
   }
 });
@@ -281,17 +285,17 @@ test('이상의 날개같은 고전명작 요청은 실제 개별 작품을 우�
   assert(result.books.every(book => book.sourceType === 'yes24'));
 });
 
-test('Gemini 503은 모델 순차 재시도 없이 한 번에 실패', async () => {
+test('GPT 503은 모델 순차 재시도 없이 한 번에 실패', async () => {
   let calls = 0;
-  const generate = createGeminiRecommendationClient({ apiKey: 'test', fetchImpl: async () => {
+  const generate = createOpenAIRecommendationClient({ apiKey: 'test', fetchImpl: async () => {
     calls++;
     return { ok: false, status: 503, json: async () => ({ error: { message: 'busy' } }) } as Response;
   } });
-  await assert.rejects(generate({ prompt: '추천', system: '평가', stage: 'evaluate_library' }), /busy/);
+  await assert.rejects(generate({ prompt: '추천', system: '평가', stage: 'evaluate_library' }), /503/);
   assert.equal(calls, 1);
 });
 
-test('모델 장애에도 실제 API 개별 작품만 서버 점수로 추천하고 기준 작가 연구서는 제외', async () => {
+test('모델 장애 시 서버 점수를 GPT 검증 결과로 대체하지 않는다', async () => {
   const books: Book[] = [
     { title: '날개', author: '이상', isbn13: '9780000000500', sourceType: 'yes24' },
     { title: '이상을 쓰다', author: '이상', isbn13: '9780000000501', sourceType: 'yes24' },
@@ -304,9 +308,9 @@ test('모델 장애에도 실제 API 개별 작품만 서버 점수로 추천하
     fetchYes24: async () => books, fetchCandidates: async () => [], searchTitle: async () => [] });
   const result = await recommend({ userMessage: '이상의 날개같은 고전명작 책 찾아줘' });
   assert.equal(modelCalls, 1);
-  assert.deepEqual(result.books.map(book => book.title), ['삼대', '광장']);
-  assert.equal(result.books[0]?.isbn13, books[3]?.isbn13);
-  assert.deepEqual(new Set(result.moreBooks?.map(book => book.title)), new Set(['이상을 쓰다', '한국 문학 선집']));
+  assert.deepEqual(result.books, []);
+  assert(result.search.failures.includes('model_evaluation_unavailable'));
+  assert.notEqual(result.response, NO_MATCH_MESSAGE);
 });
 
 test('추가 후보는 실제 검색 결과에서 선택된 책을 제외하고 최대 30권 반환', async () => {
@@ -342,14 +346,18 @@ test('명확한 topic 요청은 질문 없이 바로 검색하고, 질문 답변
   assert.equal(answered.clarification, undefined); assert.equal(answered.books.length, 1);
 });
 
-test('Gemini REST 호출에 실제 google_search 도구 포함, 키는 URL에 없음', async () => {
+test('OpenAI Responses 호출에 실제 web_search 도구 포함, 키는 URL에 없음', async () => {
   let sent: { url: string; body: string } | undefined;
-  const generate = createGeminiRecommendationClient({ apiKey: 'test-key', fetchImpl: async (url, options) => {
-    sent = { url: String(url), body: String(options?.body || '') }; return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: identity }] }, groundingMetadata: grounded.groundingMetadata }] }) } as Response;
+  const generate = createOpenAIRecommendationClient({ apiKey: 'test-key', fetchImpl: async (url, options) => {
+    sent = { url: String(url), body: String(options?.body || '') }; return { ok: true, json: async () => ({ status: 'completed', output: [
+      { type: 'web_search_call', action: { query: '심화 물리학 책' } },
+      { type: 'message', content: [{ type: 'output_text', text: identity, annotations: [{ type: 'url_citation', url: source, start_index: 0, end_index: identity.length }] }] }
+    ] }) } as Response;
   } });
   const result = await generate({ prompt: '물리학', system: 'search', search: true, json: true, stage: 'google_search' });
-  assert.deepEqual(JSON.parse(sent!.body).tools, [{ google_search: {} }]);
-  assert.equal(JSON.parse(sent!.body).generationConfig.responseMimeType, undefined);
+  assert.deepEqual(JSON.parse(sent!.body).tools, [{ type: 'web_search' }]);
+  assert.equal(JSON.parse(sent!.body).text, undefined);
+  assert(sent!.url.endsWith('/v1/responses'));
   assert(!sent!.url.includes('test-key')); assert(result.groundingMetadata?.webSearchQueries?.length);
 });
 
@@ -364,7 +372,7 @@ test('브라우저는 빈 결과와 서버 실패를 내장 책으로 바꾸지 
   for (const offline of [false, true]) {
     const shown: Array<{ text: string; books?: Book[] | null }> = [];
     const state: { turnCount: number; chatHistory: unknown[]; recommendedBooks: Book[] } = { turnCount: 0, chatHistory: [], recommendedBooks: [] };
-    const context = { getAccountRevision: () => 1, persistCurator() {}, document: { querySelector: () => null, getElementById: () => null }, AgentState: state, SafetyGuardrail: { check: () => ({ isSafe: true }) }, extractInterests() {},
+    const context = { AbortController, getAccountRevision: () => 1, persistCurator() {}, document: { querySelector: () => null, getElementById: () => null }, AgentState: state, SafetyGuardrail: { check: () => ({ isSafe: true }) }, extractInterests() {},
       callRecommendBooksApi: async () => { if (offline) throw Error('offline'); return { success: true, books: [], response: NO_MATCH_MESSAGE }; },
       renderHud() {}, renderTaoTurn() {}, appendLibrarianMessage: (text: string, books?: Book[] | null) => shown.push({ text, books }) };
     vm.createContext(context); vm.runInContext(turn, context);
@@ -381,7 +389,7 @@ test('브라우저 추천 카드는 YES24 책을 숨기지 않고 표지와 링�
     sourceType: 'yes24', reason: '추천 이유', relevanceScore: 90 };
   let shown: { text: string; books?: Book[] | null } | undefined;
   const state: { turnCount: number; chatHistory: unknown[]; recommendedBooks: Book[] } = { turnCount: 0, chatHistory: [], recommendedBooks: [] };
-  const context = { getAccountRevision: () => 1, persistCurator() {}, document: { querySelector: () => null, getElementById: () => null }, AgentState: state,
+  const context = { AbortController, getAccountRevision: () => 1, persistCurator() {}, document: { querySelector: () => null, getElementById: () => null }, AgentState: state,
     SafetyGuardrail: { check: () => ({ isSafe: true }) }, extractInterests() {},
     callRecommendBooksApi: async () => ({ success: true, books: [yes24], response: '1권 추천', search: {} }),
     renderHud() {}, renderTaoTurn() {}, appendLibrarianMessage: (text: string, books?: Book[] | null) => { shown = { text, books }; } };
@@ -435,12 +443,11 @@ test('작품처럼 시대 조건은 similar로 보정하고 두 API 고전 후�
     assert(evaluated.some(book => book.title === yes24.title));
     assert(evaluated.some(book => book.title === library.title));
     assert.equal(evaluations, 1);
-    assert.deepEqual(result.books.map(book => book.title), ['춘향전', '심청전']);
-    assert(result.books.every(book => book.title !== referenceTitle && book.title !== '조선의 새로운 꿈'));
+    assert.deepEqual(result.books, []); // Fabricated ratings cannot trigger a server-scored replacement.
   }
 });
 
-test('분석 모델 장애에도 임의 기준 작품과 시대 조건을 파싱하고 가장 가까운 실제 고전 추천', async () => {
+test('분석 모델 장애에도 기준 작품과 시대 조건은 보존하되 평가 없는 추천은 차단', async () => {
   const reference: Book = { title: '구운몽', author: '김만중', category: '한국 고전소설' };
   const books: Book[] = [reference,
     { title: '삼대', author: '염상섭', category: '한국 현대소설' },
@@ -450,8 +457,7 @@ test('분석 모델 장애에도 임의 기준 작품과 시대 조건을 파싱
     fetchYes24: async () => books, searchTitle: async () => [reference], fetchCandidates: async () => [] });
   const result = await recommend({ userMessage: '구운몽처럼 조선시대에 만들어진 고전명작 추천해줘' });
   assert.equal(result.request?.referenceBook, '구운몽');
-  assert.equal(result.books[0]?.title, '춘향전');
-  assert(result.books.every(book => book.title !== '구운몽'));
+  assert.deepEqual(result.books, []);
 });
 
 test('모델 장애 시 기준 작품의 실제 분류로 분야를 복원하고 소개 속 우주 단어에 문학을 오분류하지 않음', async () => {

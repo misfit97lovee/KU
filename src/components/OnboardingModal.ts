@@ -17,8 +17,8 @@ export function renderOnboardingModal(container: HTMLElement, { currentGrade, on
   container.innerHTML = `
     <div class="modal-backdrop" id="modal-backdrop">
       <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="grade-modal-title">
-        <h2 class="modal-title" id="grade-modal-title">몇 학년이야?</h2>
-        <p class="modal-subtitle">학년에 맞춰 설명 난이도와 어휘를 알맞게 조절해 줄게.</p>
+        <h2 class="modal-title" id="grade-modal-title">독서 설정</h2>
+        <p class="modal-subtitle">학년과 독서 수준에 맞춰 설명해요. 선택하지 않으면 중2·중급으로 시작해요.</p>
 
         <div class="grade-options">
           ${grades.map(g => `
@@ -33,10 +33,8 @@ export function renderOnboardingModal(container: HTMLElement, { currentGrade, on
 
         ${currentGrade ? `
           <button id="btn-reading-settings" class="btn-secondary-sm" style="width: 100%;">독서 수준 변경</button>
-          <button id="btn-close-modal" class="btn-secondary-sm" style="width: 100%;">
-            닫기
-          </button>
         ` : ''}
+        <button id="btn-close-modal" class="btn-secondary-sm" style="width: 100%;">${currentGrade ? '닫기' : '선택 없이 시작'}</button>
       </div>
     </div>
   `;
@@ -58,7 +56,7 @@ export function renderOnboardingModal(container: HTMLElement, { currentGrade, on
   // 바깥 클릭 시 닫기 (이미 학년이 있는 경우만)
   const backdrop = container.querySelector<HTMLElement>('#modal-backdrop')!;
   backdrop.addEventListener('click', (e) => {
-    if (e.target === backdrop && currentGrade) {
+    if (e.target === backdrop) {
       onClose();
     }
   });

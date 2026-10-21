@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>읽기 도우미 · 페이지온</title>
+    <title>독서 도우미 · 페이지온</title>
     <meta name="description" content="어려운 문장을 함께 읽고, 나만의 독서 기록을 남겨보세요." />
     <!-- Google Fonts & Pretendard -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -17,14 +17,16 @@
       <header id="header-container"></header>
 
       <!-- 모바일 탭 내비게이션 (모바일에서만 노출) -->
-      <nav id="mobile-nav" class="mobile-nav">
+      <nav id="mobile-nav" class="mobile-nav" aria-label="독서 화면">
         <button class="mobile-tab-btn active" data-target="panel-book">책 내용</button>
         <button class="mobile-tab-btn" data-target="panel-chat">함께 읽기</button>
-        <button class="mobile-tab-btn" data-target="panel-record">독서 기록</button>
+        <button class="mobile-tab-btn" data-target="panel-record">정리하기</button>
       </nav>
 
       <!-- 글로벌 알림 / 에러 배너 -->
       <div id="alert-banner" class="alert-banner hidden"></div>
+
+      <div id="reading-progress" class="reading-progress" hidden></div>
 
       <!-- 메인 3영역 작업공간 -->
       <main class="workspace-grid">

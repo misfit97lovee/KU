@@ -1,5 +1,6 @@
 import { serviceHeader, bindHistoryButton } from '../src/components/Header.ts';
 import { mountAuth } from '../src/auth.ts';
+import { displayText } from '../src/formatText.ts';
 import { saveSessionSnapshot } from '../src/sessionHistory.ts';
 import { accountGet, accountSet, accountFetch, getAccountRevision, subscribeAccount } from '../src/accountStorage.ts';
 import type { BookSourceType, RecommendationClarification, RecommendationResponse } from '../src/types/index.ts';
@@ -62,7 +63,7 @@ const requiredElement = <T extends HTMLElement = HTMLElement>(id: string): T => 
 /* -------------------------------------------------------------
    1. Application State (5-Element Architecture)
    - 보안 조치: 프론트엔드 API 키 완전 제거
-   - 브라우저 -> Express 서버(/api/recommend-books) -> .env -> Gemini
+   - 브라우저 -> Express 서버(/api/recommend-books) -> .env -> GPT Responses API
    ------------------------------------------------------------- */
 const AgentState: CuratorState = {
   goal: "중학생 관심사 탐색 및 도서 추천 · 독서 노트 완성",
@@ -486,14 +487,14 @@ const SafetyGuardrail = {
 
 /* -------------------------------------------------------------
    5. Autonomous Agent Core (Express 백엔드 연동)
-   - 브라우저 -> Express 서버(/api/recommend-books) -> .env -> Gemini
+   - 브라우저 -> Express 서버(/api/recommend-books) -> .env -> GPT Responses API
    - 프론트엔드에 API 키 일체 미포함
    ------------------------------------------------------------- */
 const API_BASE_URL = window.location.origin.includes(':3002') 
   ? '' 
   : (window.location.origin.includes(':5173') ? 'http://localhost:3002' : '');
 
-async function callRecommendBooksApi(userMessage: string): Promise<CuratorApiResponse> {
+async function callRecommendBooksApi(userMessage: string, signal: AbortSignal): Promise<CuratorApiResponse> {
   const url = `${API_BASE_URL}/api/recommend-books`;
 
   const payload = {
@@ -505,6 +506,7 @@ async function callRecommendBooksApi(userMessage: string): Promise<CuratorApiRes
   };
 
   const response = await accountFetch(url, {
+    signal,
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
@@ -518,25 +520,58 @@ async function callRecommendBooksApi(userMessage: string): Promise<CuratorApiRes
 }
 
 let isRecommendationLoading = false;
-async function runAgentTurn(userMessage: string): Promise<void> {
-  if (isRecommendationLoading) return;
-  const revision = getAccountRevision();
-  isRecommendationLoading = true;
+interface RecommendationTurn { controller: AbortController; revision: number }
+let activeRecommendationTurn: RecommendationTurn | null = null;
+
+function syncRecommendationControls(): void {
   const reset = document.querySelector<HTMLButtonElement>('[data-reset-recommendation]');
   const send = document.getElementById('sendBtn') as HTMLButtonElement | null;
-  if (reset) reset.disabled = true;
-  if (send) send.disabled = true;
-  try { await processAgentTurn(userMessage); }
-  finally {
-    if (revision === getAccountRevision()) persistCurator();
-    isRecommendationLoading = false;
-    if (reset) reset.disabled = false;
-    if (send) send.disabled = false;
+  if (reset) reset.disabled = isRecommendationLoading;
+  if (send) {
+    send.disabled = false;
+    send.textContent = isRecommendationLoading ? '중지' : AgentState.chatHistory.length ? '보내기' : '책 찾아보기';
+    send.classList.toggle('stop-btn', isRecommendationLoading);
+    send.setAttribute('aria-label', isRecommendationLoading ? '답변 생성 중지' : '메시지 보내기');
   }
 }
 
-async function processAgentTurn(userMessage: string): Promise<void> {
-  const revision = getAccountRevision();
+function isCurrentRecommendationTurn(turn: RecommendationTurn): boolean {
+  return activeRecommendationTurn === turn && !turn.controller.signal.aborted && turn.revision === getAccountRevision();
+}
+
+function stopRecommendation(showMessage = true): void {
+  const turn = activeRecommendationTurn;
+  if (!turn) return;
+  activeRecommendationTurn = null;
+  isRecommendationLoading = false;
+  turn.controller.abort();
+  if (showMessage && turn.revision === getAccountRevision()) {
+    const response = '답변 생성을 중지했어요.';
+    AgentState.chatHistory.push({ role: 'librarian', content: response });
+    appendLibrarianMessage(response);
+    persistCurator();
+  }
+  syncRecommendationControls();
+}
+
+async function runAgentTurn(userMessage: string): Promise<void> {
+  if (isRecommendationLoading) return;
+  const turn: RecommendationTurn = { controller: new AbortController(), revision: getAccountRevision() };
+  activeRecommendationTurn = turn;
+  isRecommendationLoading = true;
+  syncRecommendationControls();
+  try { await processAgentTurn(userMessage, turn); }
+  finally {
+    if (activeRecommendationTurn === turn) {
+      activeRecommendationTurn = null;
+      isRecommendationLoading = false;
+      if (turn.revision === getAccountRevision()) persistCurator();
+      syncRecommendationControls();
+    }
+  }
+}
+
+async function processAgentTurn(userMessage: string, turn: RecommendationTurn): Promise<void> {
   AgentState.turnCount++;
   const currentTurn = AgentState.turnCount;
 
@@ -577,7 +612,8 @@ async function processAgentTurn(userMessage: string): Promise<void> {
 
   // An empty result is a valid answer. Never replace it with an embedded/mock book.
   try {
-    const result = await callRecommendBooksApi(userMessage);
+    const result = await callRecommendBooksApi(userMessage, turn.controller.signal);
+    if (!isCurrentRecommendationTurn(turn)) return;
     if (!result.success || !Array.isArray(result.books)) throw new Error('Invalid recommendation response');
     if (result.clarification?.question) {
       const response = result.clarification.question;
@@ -606,7 +642,7 @@ async function processAgentTurn(userMessage: string): Promise<void> {
       actionParams: { count: books.length }, observation: books.length ? '확인된 도서 표시' : '조건에 맞는 도서 미확인', isSafe: true });
     appendLibrarianMessage(response, books, false, result.searchSuggestionsHtml, null, result.moreBooks || []);
   } catch {
-    if (revision !== getAccountRevision()) return;
+    if (!isCurrentRecommendationTurn(turn)) return;
     const response = '지금은 책 정보를 확인할 수 없어. 잠시 후 다시 찾아볼까?';
     AgentState.chatHistory.push({ role: 'librarian', content: response });
     appendLibrarianMessage(response);
@@ -743,7 +779,7 @@ function renderTaoTurn(data: TaoTurnData): void {
 
 function formatChatText(text: string): string {
   if (!text) return "";
-  let escaped = escapeHtml(text);
+  let escaped = escapeHtml(displayText(text));
   escaped = escaped.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
   escaped = escaped.replace(/(^|[^\*])\*([^\*]+)\*([^\*]|$)/g, '$1<em>$2</em>$3');
   escaped = escaped.replace(/`([^`]+)`/g, '<code style="background: var(--bg-subtle); padding: 2px 5px; border-radius: 4px; color: var(--text-primary); font-size: 0.85em;">$1</code>');
@@ -955,7 +991,7 @@ function safeBookSourceUrl(value?: string | null): string | null {
 }
 
 function handleSendMessage(): void {
-  if (isRecommendationLoading) return;
+  if (isRecommendationLoading) { stopRecommendation(); return; }
   const input = document.getElementById('chatInput') as HTMLTextAreaElement;
   const text = input.value.trim();
   if (!text) return;
@@ -971,11 +1007,12 @@ function handleInputKeydown(e: KeyboardEvent): void {
   if (e.isComposing) return;
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
-    handleSendMessage();
+    if (!isRecommendationLoading) handleSendMessage();
   }
 }
 
 function sendQuickPrompt(promptText: string): void {
+  if (isRecommendationLoading) return;
   (document.getElementById('chatInput') as HTMLTextAreaElement).value = promptText;
   handleSendMessage();
 }
@@ -1180,6 +1217,7 @@ function persistCurator(): void {
 }
 
 subscribeAccount(() => {
+  stopRecommendation(false);
   Object.assign(AgentState, { userGrade: '중학교 1학년', userInterests: [], recommendedBooks: [],
     currentDocument: null, chatHistory: [], turnCount: 0 });
   try {
@@ -1200,6 +1238,7 @@ subscribeAccount(() => {
   }
   if (AgentState.recommendedBooks.length) appendLibrarianMessage('이 계정에서 찾은 책', AgentState.recommendedBooks.slice(-3));
   renderHud();
+  syncRecommendationControls();
 });
 
 function escapeHtml(str: unknown): string {

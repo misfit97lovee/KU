@@ -1,16 +1,19 @@
+import { getOpenAIConfig } from './openai.ts';
+import { createHash } from 'node:crypto';
+import { partialMessage } from '../src/chatStream.ts';
+import { cacheBookSearch } from './bookSearchCache.ts';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { createAuthRouter } from './auth.ts';
 import { ReadingDatabase, createDatabaseRouter } from './database.ts';
-import { callReadingGemini } from './readingGemini.ts';
+import { callReadingOpenAI } from './readingOpenAI.ts';
 import { compactReadingBody, readingMemory } from './readingContext.ts';
 import { buildSystemPrompt, buildSummaryPrompt, buildReadingNotePrompt } from './prompts.ts';
-import { createRecommendationService, createGeminiRecommendationClient, parseBookSearchXml } from './bookRecommendations.ts';
+import { createRecommendationService, createOpenAIRecommendationClient, parseBookSearchXml } from './bookRecommendations.ts';
 import type {
   Book,
   ComprehensionCheck,
-  GeminiResponse,
   RecommendationInput,
   TaoLog,
   Yes24Response
@@ -26,10 +29,10 @@ interface CandidateSearchOptions {
   timeoutMs?: number;
 }
 
-interface GeminiTextPart { text: string }
-interface GeminiImagePart { inlineData: { mimeType: string; data: string } }
-type GeminiPart = GeminiTextPart | GeminiImagePart;
-interface GeminiContent { role: 'user' | 'model'; parts: GeminiPart[] }
+interface AITextPart { text: string }
+interface AIImagePart { inlineData: { mimeType: string; data: string } }
+type AIPart = AITextPart | AIImagePart;
+interface AIContent { role: 'user' | 'model'; parts: AIPart[] }
 
 interface ClientMessage { role: string; content: string }
 interface ChatBody {
@@ -44,7 +47,7 @@ interface SummaryBody {
   readingState?: Parameters<typeof buildSummaryPrompt>[0];
 }
 
-interface ParsedGeminiResponse {
+interface ParsedAIResponse {
   message: string;
   evidence: string[];
   suggestedQuestions: string[];
@@ -62,9 +65,9 @@ dotenv.config();
 const app = express();
 const PORT = process.env.SERVER_PORT || process.env.PORT || 3002;
 
-// API 키 로드 (기존 .env의 GEMINI_API 또는 표준 GEMINI_API_KEY 지원)
-const rawApiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API || '';
-const apiKey = rawApiKey.trim();
+// GPT key is server-only. Keep the user's existing GPT alias compatible.
+const aiConfig = getOpenAIConfig();
+const apiKey = aiConfig.apiKey;
 
 // 정보나루 (data4library) API 설정
 const DATA4LIBRARY_AUTH_KEY = process.env.DATA4LIBRARY_AUTH_KEY || '';
@@ -93,7 +96,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     configured: Boolean(apiKey),
-    targetModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+    targetModel: aiConfig.readingModel,
     data4library: {
       hasAuthKey: Boolean(DATA4LIBRARY_AUTH_KEY),
       libCode: DATA4LIBRARY_LIB_CODE,
@@ -166,7 +169,8 @@ async function fetchCandidateBooks({ kdc = '', pageSize = 30, pageNo = 1, keywor
  * YES24 상품 검색 API 호출 헬퍼
  */
 async function fetchYes24Books({ query, pageSize = 20, timeoutMs = 10000 }: { query: string; pageSize?: number; timeoutMs?: number }): Promise<Book[]> {
-  if (!YES24_API_KEY || !query) return [];
+  if (!query) return [];
+  if (!YES24_API_KEY) throw new Error('YES24 search is not configured');
   try {
     const url = new URL('https://apis.yes24.com/v1/goods/itemList');
     url.searchParams.set('query', query);
@@ -184,8 +188,9 @@ async function fetchYes24Books({ query, pageSize = 20, timeoutMs = 10000 }: { qu
       signal: AbortSignal.timeout(timeoutMs)
     });
 
-    if (!response.ok) return [];
+    if (!response.ok) throw new Error('YES24 search unavailable');
     const data = await response.json() as Yes24Response;
+    if (!Array.isArray(data.data?.items)) throw new Error('YES24 search unavailable');
     const items = data.data?.items || [];
     return items.map(item => ({
       title: item.title || '',
@@ -200,8 +205,7 @@ async function fetchYes24Books({ query, pageSize = 20, timeoutMs = 10000 }: { qu
       sourceUrl: item.link || ''
     }));
   } catch (err: unknown) {
-    console.warn('[YES24 Search Error]', errorMessage(err));
-    return [];
+    throw new Error('YES24 search unavailable');
   }
 }
 
@@ -250,15 +254,15 @@ app.get('/api/library/items', async (req, res) => {
 /**
  * 독서 요청당 한 번만 호출, 텍스트 12초/사진 20초 제한
  */
-async function callGemini(contents: GeminiContent[], systemInstruction: string, preferredModel = 'gemini-flash-lite-latest'): Promise<{ text: string; modelUsed: string }> {
-  return callReadingGemini(contents, systemInstruction, apiKey, preferredModel,
+async function callAI(contents: AIContent[], systemInstruction: string, preferredModel = aiConfig.readingModel): Promise<{ text: string; modelUsed: string }> {
+  return callReadingOpenAI(contents, systemInstruction, apiKey, preferredModel,
     contents.some(content => content.parts.some(part => 'inlineData' in part)) ? 20000 : 12000);
 }
 
 /**
  * 응답 텍스트에서 JSON 및 TAO 구조 파싱
  */
-function parseGeminiResponse(rawText: string): ParsedGeminiResponse {
+function parseAIResponse(rawText: string): ParsedAIResponse {
   let cleaned = rawText.trim();
   if (cleaned.startsWith('```json')) {
     cleaned = cleaned.slice(7);
@@ -367,6 +371,11 @@ function parseGeminiResponse(rawText: string): ParsedGeminiResponse {
  * 사용자 메시지 수신 (텍스트 + 책 사진 멀티모달 + 설명 난이도 조절 지원)
  */
 app.post('/api/chat', async (req, res) => {
+  const started = performance.now();
+  const cancellation = new AbortController();
+  res.on('close', () => { if (!res.writableEnded) cancellation.abort(); });
+  const wantsStream = req.headers.accept === 'text/event-stream' && !req.body?.image;
+  const sendEvent = (event: unknown) => { if (!res.destroyed) res.write(`data: ${JSON.stringify(event)}\n\n`); };
   try {
     const { messages, readingState, image, explanationLevel, conversationSummary, sourceText } = compactReadingBody(req.body || {});
 
@@ -376,9 +385,9 @@ app.post('/api/chat', async (req, res) => {
 
     const systemPrompt = buildSystemPrompt(readingState, explanationLevel) + readingMemory(conversationSummary, sourceText);
 
-    // Gemini API 포맷으로 메시지 변환 (role: user / model)
-    const contents: GeminiContent[] = messages.map((msg, idx) => {
-      const parts: GeminiPart[] = [];
+    // AI API 포맷으로 메시지 변환 (role: user / model)
+    const contents: AIContent[] = messages.map((msg, idx) => {
+      const parts: AIPart[] = [];
 
       // 마지막 사용자 메시지에 이미지가 첨부된 경우 멀티모달 파트 주입
       if (idx === messages.length - 1 && image && image.data) {
@@ -398,7 +407,7 @@ app.post('/api/chat', async (req, res) => {
       };
     });
 
-    // Gemini API는 마지막 턴이 model이면 에러가 발생하므로 마지막이 model인 경우 적절한 user 턴 추가
+    // 기존 설명 전환 동작을 유지하도록 마지막이 assistant 턴이면 요청 턴 추가
     if (contents.length > 0 && contents.at(-1)?.role === 'model') {
       let promptText = '방금 설명한 내용을 더 쉽게 설명해줘.';
       if (explanationLevel === 'quiz_request') {
@@ -414,23 +423,38 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
-    const preferredModel = process.env.GEMINI_READING_MODEL || process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
-    const { text, modelUsed } = await callGemini(contents, systemPrompt, preferredModel);
-    const { message, evidence: rawEvidence = [], suggestedQuestions = [], tao, comprehensionCheck, extractedText } = parseGeminiResponse(text);
+    const preferredModel = aiConfig.readingModel;
+    let partial = '', shown = '', firstMessage = true;
+    if (wantsStream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+    }
+    const { text, modelUsed } = wantsStream ? await callReadingOpenAI(contents, systemPrompt, apiKey, preferredModel, 12000, fetch, {
+      signal: cancellation.signal, onTextDelta: delta => {
+        partial += delta; const message = partialMessage(partial);
+        if (message && message !== shown) {
+          if (firstMessage) { console.log('[Reading timing]', JSON.stringify({stage:'first_message',elapsedMs:Math.round(performance.now()-started)})); firstMessage=false; }
+          shown = message; sendEvent({type:'message',message});
+        }
+      }
+    }) : await callAI(contents, systemPrompt, preferredModel);
+    const { message, evidence: rawEvidence = [], suggestedQuestions = [], tao, comprehensionCheck, extractedText } = parseAIResponse(text);
 
     // 실제 입력된 텍스트 및 추출 텍스트에서 검증된 근거만 필터링
     const userMessages = messages.filter(m => m.role === 'user').map(m => m.content);
     const verifiedEvidence = validateEvidence(rawEvidence, { userMessages: [...userMessages, sourceText], extractedText });
 
     const featureName = image ? '책 사진 분석' : (explanationLevel ? `설명 전환(${explanationLevel})` : '대화 응답');
-    console.log(`[Gemini 호출 성공] 기능: ${featureName} | 사용 모델: ${modelUsed}`);
+    console.log(`[AI 호출 성공] 기능: ${featureName} | 사용 모델: ${modelUsed}`);
 
     const isQuizQuestion = explanationLevel === 'quiz_request' || (
       (message.includes('가볍게 한 가지') || message.includes('물어볼게') || message.includes('질문 하나') || message.includes('질문할게')) &&
       !message.includes('✅') && !message.includes('🟡') && !message.includes('🔄')
     );
 
-    return res.json({
+    const result = {
       message,
       extractedText,
       evidence: isQuizQuestion ? [] : verifiedEvidence,
@@ -440,9 +464,13 @@ app.post('/api/chat', async (req, res) => {
       isQuizQuestion,
       modelUsed,
       statePatch: {}
-    });
+    };
+    console.log('[Reading timing]', JSON.stringify({stage:'total',elapsedMs:Math.round(performance.now()-started),dbCalls:0}));
+    if (wantsStream) { sendEvent({type:'done',data:result}); return res.end(); }
+    return res.json(result);
   } catch (error: unknown) {
     console.error('[API /api/chat 에러]:', sanitizeError(error));
+    if (res.headersSent) { sendEvent({type:'error'}); return res.end(); }
     return res.status(500).json({
       error: '설명을 만드는 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요.'
     });
@@ -463,7 +491,7 @@ app.post('/api/summary', async (req, res) => {
 
     const summaryPrompt = buildSummaryPrompt(readingState) + readingMemory(conversationSummary, sourceText);
 
-    const contents: GeminiContent[] = messages.map(msg => ({
+    const contents: AIContent[] = messages.map(msg => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: msg.content }]
     }));
@@ -473,11 +501,11 @@ app.post('/api/summary', async (req, res) => {
       parts: [{ text: '지금까지 우리가 대화에서 확인한 책 내용을 바탕으로 독서 요약을 작성해줘.' }]
     });
 
-    const preferredModel = process.env.GEMINI_READING_MODEL || process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
-    const { text, modelUsed } = await callGemini(contents, summaryPrompt, preferredModel);
-    const { summary, tao } = parseGeminiResponse(text);
+    const preferredModel = aiConfig.readingModel;
+    const { text, modelUsed } = await callAI(contents, summaryPrompt, preferredModel);
+    const { summary, tao } = parseAIResponse(text);
 
-    console.log(`[Gemini 호출 성공] 기능: 독서 요약 생성 | 사용 모델: ${modelUsed}`);
+    console.log(`[AI 호출 성공] 기능: 독서 요약 생성 | 사용 모델: ${modelUsed}`);
 
     return res.json({
       summary: summary || text,
@@ -510,7 +538,7 @@ app.post('/api/reading-note', async (req, res) => {
 
     const notePrompt = buildReadingNotePrompt(readingState) + readingMemory(conversationSummary, sourceText);
 
-    const contents: GeminiContent[] = messages.map(msg => ({
+    const contents: AIContent[] = messages.map(msg => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: msg.content }]
     }));
@@ -520,8 +548,8 @@ app.post('/api/reading-note', async (req, res) => {
       parts: [{ text: '지금까지 대화에서 다룬 내용과 독서 상태를 바탕으로 주어진 형식에 맞추어 오늘의 독서노트를 작성해줘.' }]
     });
 
-    const preferredModel = process.env.GEMINI_READING_MODEL || process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
-    const { text, modelUsed } = await callGemini(contents, notePrompt, preferredModel);
+    const preferredModel = aiConfig.readingModel;
+    const { text, modelUsed } = await callAI(contents, notePrompt, preferredModel);
 
     let readingNote = text;
     let tao = {
@@ -546,7 +574,7 @@ app.post('/api/reading-note', async (req, res) => {
       // 텍스트 폴백
     }
 
-    console.log(`[Gemini 호출 성공] 기능: 오늘의 독서노트 생성 | 사용 모델: ${modelUsed}`);
+    console.log(`[AI 호출 성공] 기능: 오늘의 독서노트 생성 | 사용 모델: ${modelUsed}`);
 
     return res.json({
       readingNote,
@@ -563,37 +591,54 @@ app.post('/api/reading-note', async (req, res) => {
 
 // Separate recommendation gateway keeps reading/photo/summary model behavior unchanged.
 const recommendationEvent = (event: Record<string, unknown>): void => console.log('[Book recommendation]', JSON.stringify(event));
+const cachedLibrarySearch = cacheBookSearch((options: CandidateSearchOptions) => fetchCandidateBooks({ ...options, timeoutMs: 3000 }), { stage: 'library_search', onEvent: recommendationEvent });
+const cachedYes24Search = cacheBookSearch((options: { query: string; pageSize?: number }) => fetchYes24Books({ ...options, timeoutMs: 3000 }), { stage: 'yes24_search', onEvent: recommendationEvent });
+const cachedTitleSearch = cacheBookSearch(async (title: string): Promise<Book[]> => {
+  if (!DATA4LIBRARY_AUTH_KEY) throw new Error('Library search is not configured');
+  const url = new URL(`${DATA4LIBRARY_BASE_URL}/srchBooks`);
+  url.search = new URLSearchParams({ authKey: DATA4LIBRARY_AUTH_KEY, title, pageNo: '1', pageSize: '30' }).toString();
+  const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
+  if (!response.ok) throw new Error(`Library title search HTTP ${response.status}`);
+  const xml = await response.text();
+  if (xml.includes('<error>')) throw new Error('Library title search error');
+  return parseBookSearchXml(xml);
+}, { stage: 'title_search', onEvent: recommendationEvent });
 const recommendBooks = createRecommendationService({
-  generate: createGeminiRecommendationClient({
+  generate: createOpenAIRecommendationClient({
     apiKey,
-    model: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
-    searchModel: process.env.GEMINI_SEARCH_MODEL || process.env.GEMINI_MODEL || 'gemini-3.6-flash',
+    model: aiConfig.recommendationModel,
+    searchModel: aiConfig.recommendationModel,
     onEvent: recommendationEvent
   }),
-  fetchCandidates: options => fetchCandidateBooks({ ...options, timeoutMs: 3000 }),
-  fetchYes24: options => fetchYes24Books({ ...options, timeoutMs: 3000 }),
+  fetchCandidates: cachedLibrarySearch,
+  fetchYes24: cachedYes24Search,
   enableGoogleGrounding: process.env.ENABLE_GOOGLE_GROUNDING === 'true',
-  searchTitle: async (title: string): Promise<Book[]> => {
-    if (!DATA4LIBRARY_AUTH_KEY) throw new Error('Library search is not configured');
-    // srchBooks is the actual title/keyword search API; itemSrch is a holdings list.
-    const url = new URL(`${DATA4LIBRARY_BASE_URL}/srchBooks`);
-    url.search = new URLSearchParams({ authKey: DATA4LIBRARY_AUTH_KEY, title, pageNo: '1', pageSize: '30' }).toString();
-    const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
-    if (!response.ok) throw new Error(`Library title search HTTP ${response.status}`);
-    const xml = await response.text();
-    if (xml.includes('<error>')) throw new Error('Library title search error');
-    return parseBookSearchXml(xml);
-  },
-  onEvent: recommendationEvent
+  searchTitle: cachedTitleSearch,
+  onEvent: recommendationEvent,
+  fastExplicitTopics: true
+});
+
+// Cache only completed, API-verified AND GPT-evaluated successes. Entire input
+// and verified account scope form the key; no cross-account history reuse.
+// Memory only, bounded 64 entries, no prompts/keys logged or persisted.
+const cachedRecommendations = cacheBookSearch(async (_scope: string, input: RecommendationInput) => recommendBooks(input), {
+  stage: 'recommendation_cache', onEvent: recommendationEvent,
+  key: args => createHash('sha256').update(JSON.stringify(args)).digest('hex'),
+  shouldCache: result => result.books.length > 0 && result.search?.failures.length === 0
 });
 
 app.post('/api/recommend-books', async (req, res) => {
+  const started = performance.now();
   try {
     const { userMessage, userGrade, userInterests, chatHistory, recommendedBooks } = req.body as Partial<RecommendationInput>;
     if (typeof userMessage !== 'string' || !userMessage.trim()) {
       return res.status(400).json({ error: '사용자 메시지가 필요합니다.' });
     }
-    const result = await recommendBooks({
+    const authStarted = performance.now();
+    const user = await authRouter.resolveUser(req);
+    recommendationEvent({ stage: 'auth', elapsedMs: Math.round(performance.now() - authStarted), dbCalls: 0 });
+    const scope = user?.id || createHash('sha256').update(req.headers.cookie || 'anonymous').digest('hex');
+    const result = await cachedRecommendations(scope, {
       userMessage: userMessage.trim(),
       userGrade: typeof userGrade === 'string' ? userGrade : '중1',
       userInterests: Array.isArray(userInterests) ? userInterests : [],
@@ -601,7 +646,8 @@ app.post('/api/recommend-books', async (req, res) => {
       recommendedBooks: Array.isArray(recommendedBooks) ? recommendedBooks : []
     });
     console.log('[Book recommendation result]', JSON.stringify({
-      count: result.books.length, sourceTypes: result.books.map(b => b.sourceType), search: result.search
+      count: result.books.length, sourceTypes: result.books.map(b => b.sourceType), search: result.search,
+      elapsedMs: Math.round(performance.now() - started), dbCalls: 0
     }));
     return res.json(result);
   } catch (error: unknown) {
@@ -613,6 +659,7 @@ app.post('/api/recommend-books', async (req, res) => {
 });
 
 const isRunningTests = process.execArgv.includes('--test') || process.env.NODE_ENV === 'test';
+export { app };
 if (!isRunningTests) {
   app.listen(PORT, () => {
     console.log(`[Reading Agent Server] 포트 ${PORT}에서 서버가 실행 중입니다.`);

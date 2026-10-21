@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildReadingRequest } from '../src/readingRequest.ts';
 import { compactReadingBody } from '../server/readingContext.ts';
-import { callReadingGemini } from '../server/readingGemini.ts';
+import { callReadingOpenAI } from '../server/readingOpenAI.ts';
 import type { ReadingState } from '../src/types/index.ts';
 
 test('최근 6개만 전송, 오래된 대화 압축, 이미지/TAO/전체 상태 제외', () => {
@@ -25,21 +25,24 @@ test('최근 6개만 전송, 오래된 대화 압축, 이미지/TAO/전체 상�
   assert.equal(bounded.image, null);
 });
 
-test('일반 텍스트는 text part만; 성공/503 모두 Gemini 1회 호출', async () => {
+test('일반 텍스트는 텍스트 input만; 성공/503 모두 GPT 1회 호출, medium 및 저장 안 함', async () => {
   for (const status of [200, 503]) {
     let calls = 0;
     const request: typeof fetch = async (_url, options) => {
       calls++;
       const payload = JSON.parse(String(options?.body));
-      assert.deepEqual(payload.contents, [{ role: 'user', parts: [{ text: '별이 뭔가요?' }] }]);
-      assert.equal(payload.generationConfig.thinkingConfig.thinkingBudget, 0);
+      assert.equal(payload.input[0].role, 'developer');
+      assert.match(payload.input[0].content, /JSON/);
+      assert.deepEqual(payload.input.slice(1), [{ role: 'user', content: '별이 뭔가요?' }]);
+      assert.equal(payload.reasoning.effort, 'medium');
+      assert.equal(payload.store, false);
       assert.equal(payload.tools, undefined);
       assert.ok(options?.signal);
-      return new Response(JSON.stringify(status === 200 ? { candidates: [{ content: { parts: [{ text: '별은 빛을 냅니다.' }] } }] } : { error: { message: 'busy' } }), { status });
+      return new Response(JSON.stringify(status === 200 ? { status: 'completed', model: 'gpt-5.6-luna', output: [{ type: 'message', content: [{ type: 'output_text', text: '{"message":"별은 빛을 냅니다."}' }] }] } : { error: { message: 'busy' } }), { status });
     };
-    const result = callReadingGemini([{ role: 'user', parts: [{ text: '별이 뭔가요?' }] }], '도우미', 'test-key', 'gemini-2.5-flash', 12000, request);
+    const result = callReadingOpenAI([{ role: 'user', parts: [{ text: '별이 뭔가요?' }] }], '도우미', 'test-key', 'gpt-5.6-luna', 12000, request);
     if (status === 503) await assert.rejects(result, /503/);
-    else assert.equal((await result).text, '별은 빛을 냅니다.');
+    else assert.equal(JSON.parse((await result).text).message, '별은 빛을 냅니다.');
     assert.equal(calls, 1);
   }
 });

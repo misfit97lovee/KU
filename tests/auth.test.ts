@@ -67,7 +67,7 @@ test('A 로그인/새로고침/로그아웃 → B 격리 → A 재로그인 및 
     assert.equal(login.status, 200);
     assert.deepEqual((await login.json() as { user: typeof user }).user, user);
     setAccount(user.id);
-    saveSessionSnapshot('reading', { book: { title: 'A 비공개 기록' } });
+    saveSessionSnapshot('reading', { book: { title: 'A 비공개 기록' }, session: { recentMessages: [{role:'user',content:'A의 독서 질문'}] } });
     const cookie = login.headers.get('set-cookie')!.split(';')[0]!;
     assert.match(login.headers.get('set-cookie')!, /HttpOnly/i);
     const stored = JSON.parse(await readFile(storePath, 'utf8')) as { users: Record<string, typeof user>; sessions: Record<string, unknown> };
@@ -88,7 +88,7 @@ test('A 로그인/새로고침/로그아웃 → B 격리 → A 재로그인 및 
     assert.equal(bUser.id, 'google-B');
     setAccount(bUser.id);
     assert.deepEqual(getSavedSessions(), []);
-    saveSessionSnapshot('reading', { book: { title: 'B 비공개 기록' } });
+    saveSessionSnapshot('reading', { book: { title: 'B 비공개 기록' }, session: { recentMessages: [{role:'user',content:'B의 독서 질문'}] } });
     const aRelogin = await fetch(`${base()}/google`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credential: 'valid-token' }) });
     setAccount((await aRelogin.json() as { user: typeof user }).user.id);
     assert.deepEqual(getSavedSessions().map(record => record.title), ['A 비공개 기록']);

@@ -1,6 +1,10 @@
 import { stateManager } from './state.ts';
-import { accountFetch, getAccountId, subscribeAccount } from './accountStorage.ts';
+import { accountFetch, getAccountId, getAccountSignal, subscribeAccount } from './accountStorage.ts';
+import { readChatResponse } from './chatStream.ts';
 import { buildReadingRequest } from './readingRequest.ts';
+import { hasReadingActivity } from './readingActivity.ts';
+import { openHistoryDialog } from './components/HistoryDialog.ts';
+import { displayText } from './formatText.ts';
 import { renderHeader } from './components/Header.ts';
 import { renderOnboardingModal, renderReadingLevelModal } from './components/OnboardingModal.ts';
 import { renderBookInputPanel } from './components/BookInputPanel.ts';
@@ -47,6 +51,14 @@ function showAlert(message: string): void {
  */
 function renderApp(): void {
   const state = stateManager.getState();
+  const started = hasReadingActivity('reading', state);
+  document.getElementById('app')!.classList.toggle('reading-start', !started);
+  const progress = document.getElementById('reading-progress')!;
+  progress.hidden = !started;
+  const stage = state.session.readingNote ? 3 : state.session.isQuizActive ? 2
+    : state.session.comprehensionChecks.some(check => /잘 이해|거의 이해/u.test(check.result || '')) ? 3 : 1;
+  progress.innerHTML = `<ol aria-label="독서 순서">${['함께 읽기','이해 확인','독서노트'].map((label,index) =>
+    `<li ${stage === index+1 ? 'aria-current="step"' : ''}>${index+1}. ${label}</li>`).join('')}</ol>`;
 
   // 1. 헤더 렌더링
   renderHeader(headerEl, state, {
@@ -71,6 +83,7 @@ function renderApp(): void {
 
   // 2. 패널 1: 책 내용 (텍스트 및 사진 업로드)
   renderBookInputPanel(panelBookEl, {
+    introductory: !started,
     bookTitle: state.book.title,
     onGazeReport: (report) => stateManager.addGazeReport(report),
     onSendToChat: (text) => {
@@ -112,11 +125,12 @@ function renderApp(): void {
     onRetryExplain: (topic) => {
       handleSendMessage(`이 부분 다시 설명해줘: ${topic}`);
       switchMobileTab('panel-chat');
-    }
+    },
+    onSaveRecord: () => openHistoryDialog({ saveCurrent: true })
   });
 
   // 5. 온보딩 모달 (학년 미설정 또는 사용자가 직접 열었을 때)
-  if (state.student.grade && (isReadingLevelModalOpen || (!isModalOpen && !state.student.readingLevelSelected))) {
+  if (isReadingLevelModalOpen) {
     const finishLevel = (level: '입문' | '중급' | '심화') => {
       isReadingLevelModalOpen = false;
       isModalOpen = false;
@@ -127,7 +141,7 @@ function renderApp(): void {
       onSelect: finishLevel,
       onSkip: () => finishLevel(state.student.readingLevel || '중급')
     });
-  } else if (!state.student.grade || isModalOpen) {
+  } else if (isModalOpen) {
     renderOnboardingModal(modalContainerEl, {
       currentGrade: state.student.grade,
       onSelectGrade: (grade) => {
@@ -135,12 +149,6 @@ function renderApp(): void {
         isReadingLevelModalOpen = true;
         stateManager.setGrade(grade);
 
-        if (state.session.recentMessages.length === 0) {
-          stateManager.addMessage(
-            'assistant',
-            `안녕! ${grade} 독서 이해 도우미야. 책 사진을 찍어 보여주거나 어려운 문장을 채팅창에 적어주면, 함께 생각하며 이해하도록 도와줄게!`
-          );
-        }
         renderApp();
       },
       onOpenReadingLevel: () => {
@@ -171,13 +179,20 @@ async function handleSendMessage(content: string): Promise<void> {
 
   try {
     const state = stateManager.getState();
+    const signal = getAccountSignal();
     const response = await accountFetch('/api/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
       body: JSON.stringify(buildReadingRequest(state))
     });
 
-    const data = await response.json() as ReadingApiResponse;
+    const data = await readChatResponse(response, signal, message => {
+      signal.throwIfAborted();
+      const preview = panelChatEl.querySelector('#streaming-response');
+      if (preview) { preview.textContent = displayText(message); preview.classList.remove('typing-indicator'); }
+      const box = panelChatEl.querySelector('#chat-messages-box');
+      if (box) box.scrollTop = box.scrollHeight;
+    });
 
     if (!response.ok) {
       throw new Error(data.details || data.error || '답변 요청에 실패했습니다.');

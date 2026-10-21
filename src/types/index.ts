@@ -171,7 +171,7 @@ export interface ReadingState {
   taoLogs: TaoLog[];
 }
 
-export interface GeminiGroundingMetadata {
+export interface GroundingMetadata {
   webSearchQueries?: string[];
   groundingChunks?: Array<{ web?: { uri?: string } }>;
   groundingSupports?: Array<{
@@ -181,18 +181,10 @@ export interface GeminiGroundingMetadata {
   searchEntryPoint?: { renderedContent?: string };
 }
 
-export interface GeminiResponse {
-  candidates?: Array<{
-    content?: { parts?: Array<{ text?: string; thought?: boolean }> };
-    groundingMetadata?: GeminiGroundingMetadata;
-  }>;
-  error?: { message?: string; status?: string };
-}
-
-export interface GeminiGenerationResult {
+export interface AIGenerationResult {
   text: string;
   modelUsed?: string;
-  groundingMetadata?: GeminiGroundingMetadata | null;
+  groundingMetadata?: GroundingMetadata | null;
 }
 
 export interface ReadingApiResponse {
