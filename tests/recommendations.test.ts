@@ -222,7 +222,7 @@ test('similar 추천은 재정렬 후에도 실제 API 후보 메타데이터만
   const result = selectLibraryBooks([actual], assessment, literarySimilarRequest);
   assert.deepEqual(result, []);
 
-  const valid = selectLibraryBooks([actual], { ratings: [{ ...assessment.ratings[0], isbn13: actual.isbn13 }] }, literarySimilarRequest);
+  const valid = selectLibraryBooks([actual], { ratings: [{ ...assessment.ratings[0], title: actual.title, isbn13: actual.isbn13 }] }, literarySimilarRequest);
   assert.equal(valid[0]?.title, actual.title);
   assert.equal(valid[0]?.publisher, actual.publisher);
   assert.equal(valid[0]?.isbn13, actual.isbn13);

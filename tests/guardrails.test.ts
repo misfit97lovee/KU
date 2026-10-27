@@ -216,7 +216,7 @@ test('가드레일 5: Gemini 응답이 마크다운 래핑되거나 prose 섞여
 
 // 6. recommendedBooks는 모두 실제 후보 기반 (Gemini 생성값으로 덮어쓰지 않음)
 test('가드레일 6: recommendedBooks의 메타데이터(제목, 저자, ISBN, 출판사, 표지)는 실제 후보 데이터 원본만 사용', () => {
-  // Gemini 평가 객체에 조작된 title/author 등이 포함되어 있어도 무시됨
+  // 조작된 서지 정보는 평가 전체를 거부한다.
   const ratingWithFakeMetadata = {
     ratings: [
       {
@@ -234,7 +234,9 @@ test('가드레일 6: recommendedBooks의 메타데이터(제목, 저자, ISBN, 
     ]
   };
 
-  const results = selectLibraryBooks(mockCandidates, ratingWithFakeMetadata, baseRequest);
+  assert.deepEqual(selectLibraryBooks(mockCandidates, ratingWithFakeMetadata, baseRequest), []);
+  const results = selectLibraryBooks(mockCandidates, { ratings: [{ ...ratingWithFakeMetadata.ratings[0],
+    title: mockCandidates[0]!.title, author: mockCandidates[0]!.authors, publisher: mockCandidates[0]!.publisher }] }, baseRequest);
   assert.equal(results.length, 1);
   const book = results[0]!;
 

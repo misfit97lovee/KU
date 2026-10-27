@@ -3,6 +3,25 @@
 .recommendation-heading { margin-bottom: 24px; text-align: left; }
 .recommendation-heading h1 { font-size: var(--font-title); font-weight: 600; letter-spacing: -.5px; }
 .recommendation-heading p { color: var(--text-secondary); font-size: 14px; margin-top: 8px; }
+.preferences-entry { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; font-size: 12px; color: var(--text-secondary); }
+.preferences-entry button[hidden] { display: none; }
+.preferences-dialog { margin: auto; padding: 24px; width: min(560px, calc(100% - 32px)); max-height: 85dvh; overflow: auto; border: 1px solid var(--border-color); border-radius: var(--radius-md); color: var(--text-primary); background: #fff; }
+.preferences-dialog::backdrop { background: rgba(38,48,68,.28); }
+.preferences-dialog header, .preferences-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.preferences-dialog h2 { font-size: 20px; font-weight: 600; }
+.preferences-dialog header button { border: 0; background: none; color: var(--text-secondary); }
+.preferences-dialog p { font-size: 13px; line-height: 1.7; margin: 14px 0; color: var(--text-secondary); }
+.preferences-dialog fieldset { border: 0; padding: 0; margin: 20px 0; }
+.preferences-dialog legend, .preferences-text { font-size: 14px; font-weight: 500; }
+.preferences-dialog span { font-size: 12px; font-weight: 400; color: var(--text-secondary); }
+.preferences-options { display: flex; flex-wrap: wrap; gap: 12px 18px; margin-top: 12px; }
+.preferences-options label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.preferences-options input { accent-color: var(--primary); }
+.preferences-text { display: block; margin: 18px 0; }
+.preferences-text input, .preferences-text textarea { display: block; width: 100%; padding: 10px; margin-top: 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: #fff; color: var(--text-primary); font: inherit; }
+.preferences-dialog footer { justify-content: flex-end; flex-wrap: wrap; margin-top: 20px; }
+.preferences-dialog footer [data-delete] { margin-right: auto; }
+.preferences-dialog .preferences-error { color: var(--text-primary); }
 .recommendation-chat { display: flex; flex-direction: column; background: transparent; border: 0; border-radius: 0; overflow: visible; }
 .chat-messages { order: 3; min-height: 0; max-height: none; overflow: visible; padding: 34px 0 0; }
 .msg-group.initial-greeting { display: none; }
@@ -43,6 +62,10 @@
 .book-reason { margin-top: 2px; font-size: 13px; color: var(--text-secondary); line-height: 1.75; }
 .reason-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .book-actions { display: flex; align-items: center; justify-content: flex-end; gap: 16px; flex-wrap: wrap; margin-top: auto; padding-top: 8px; }
+.book-summary { grid-column: 1 / -1; border-top: 1px solid var(--border-color); padding-top: 16px; font-size: 14px; line-height: 1.8; }
+.book-summary h3 { margin: 14px 0 6px; font-size: 14px; font-weight: 600; }
+.book-summary ul { padding-left: 20px; }
+.book-summary-source { margin-top: 14px; font-size: 12px; color: var(--text-muted); }
 .book-btn { width: auto; min-width: 124px; }
 .more-books-section { margin-top: 12px; width: min(100%, 880px); }
 .more-books-toggle { padding: 6px 0; border: 0; background: transparent; color: var(--text-secondary); font-size: 12px; font-weight: 500; cursor: pointer; }

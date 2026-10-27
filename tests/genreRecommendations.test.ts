@@ -52,7 +52,8 @@ test('의도 분석 장애에도 명시적 장르만 검색하고 사전·학습
     fetchYes24: async () => { throw new Error('provider failed'); },
     fetchCandidates: async () => { libraryCalls++; return books; }, searchTitle: async () => [] });
   const result = await recommend({ userMessage: '중학생 미스터리 추리소설 추천해줘' });
-  assert.equal(result.books.length, 0); assert.equal(libraryCalls, 3);
+  assert.equal(result.books.length, 1); assert.equal(result.books[0]?.isbn13, books[0]!.isbn13); assert.equal(libraryCalls, 3);
+  assert(result.search.fallbackUsed); assert.match(result.response, /실제 도서 정보/);
   assert(result.search.failures.includes('model_evaluation_unavailable'));
   assert(result.moreBooks?.every(book => !/사전|학습/u.test(book.title)));
   assert(result.search.failures.includes('yes24_search_failed'));

@@ -22,6 +22,14 @@ export interface Book {
   bookDtUrl?: string;
 }
 
+export interface BookSummaryResponse {
+  available: boolean;
+  sentences: string[];
+  features: string[];
+  attribution: string;
+  message?: string;
+}
+
 export interface RecommendedBook {
   title: string;
   author: string;
@@ -91,6 +99,21 @@ export interface RecommendationInput {
   userInterests?: string[];
   chatHistory?: RecommendationChatMessage[];
   recommendedBooks?: RecommendedBook[];
+  // Filled by Express from the verified session; never accepted from a client.
+  personalization?: RecommendationPersonalization;
+}
+
+export interface ReadingPreferences {
+  genres: string[];
+  topics: string[];
+  favorite_authors: string[];
+  favorite_books: string[];
+}
+
+export interface RecommendationPersonalization {
+  preferences: ReadingPreferences | null;
+  // read_books records do not prove completion and must not become exclusions.
+  readingHistory: Array<{ title: string; author: string; isbn13: string | null }>;
 }
 
 export interface RecommendationResponse {

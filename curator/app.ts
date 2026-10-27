@@ -1,5 +1,7 @@
 import { serviceHeader, bindHistoryButton } from '../src/components/Header.ts';
 import { mountAuth } from '../src/auth.ts';
+import { mountReadingPreferences } from './preferences.ts';
+import { mountBookSummary } from './bookSummary.ts';
 import { displayText } from '../src/formatText.ts';
 import { saveSessionSnapshot } from '../src/sessionHistory.ts';
 import { accountGet, accountSet, accountFetch, getAccountRevision, subscribeAccount } from '../src/accountStorage.ts';
@@ -490,9 +492,8 @@ const SafetyGuardrail = {
    - 브라우저 -> Express 서버(/api/recommend-books) -> .env -> GPT Responses API
    - 프론트엔드에 API 키 일체 미포함
    ------------------------------------------------------------- */
-const API_BASE_URL = window.location.origin.includes(':3002') 
-  ? '' 
-  : (window.location.origin.includes(':5173') ? 'http://localhost:3002' : '');
+// Use the existing Vite proxy so HttpOnly login cookies reach Express.
+const API_BASE_URL = '';
 
 async function callRecommendBooksApi(userMessage: string, signal: AbortSignal): Promise<CuratorApiResponse> {
   const url = `${API_BASE_URL}/api/recommend-books`;
@@ -962,6 +963,10 @@ function appendLibrarianMessage(text: string, books: CuratorBook[] | null = null
   }
   container.appendChild(msgDiv);
   const moreToggles = msgDiv.querySelectorAll<HTMLButtonElement>('[data-more-books-toggle]');
+  msgDiv.querySelectorAll<HTMLElement>('.book-card').forEach((card, index) => {
+    const book = books?.[index];
+    if (book) mountBookSummary(card, book);
+  });
   moreToggles.forEach(button => button.addEventListener('click', () => {
     const list = msgDiv.querySelector<HTMLElement>('[data-more-books-list]');
     if (!list) return;
@@ -1257,6 +1262,7 @@ requiredElement('header-container').innerHTML = serviceHeader('recommend',
   </select>`, '<button class="btn-secondary-sm" data-reset-recommendation onclick="resetSession()">새 세션</button>');
 
 bindHistoryButton(requiredElement('header-container'));
+mountReadingPreferences(requiredElement('readingPreferences'), () => stopRecommendation(false));
 mountAuth(requiredElement('header-container'));
 
 // Preserve existing HTML event bindings when bundled as an ES module.
